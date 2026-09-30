@@ -1,0 +1,18 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+*.pkl
+
+# Training models and checkpoints (save space on GitHub)
+*.zip
+checkpoints/
+
+# Raw simulation output & high-volume logs
+ns3_sim.log
+*.csv
+
+# OS metadata
+.DS_Store
+.vscode/
