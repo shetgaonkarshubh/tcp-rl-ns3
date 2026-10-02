@@ -9,14 +9,14 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from tcp_env import CustomTcpEnv
 
 
-def linear_schedule(initial_value: float, final_value: float = 2e-5) -> Callable[[float], float]:
+def linear_schedule(initial_value: float, final_value: float = 3e-5) -> Callable[[float], float]:
     def func(progress_remaining: float) -> float:
         return final_value + progress_remaining * (initial_value - final_value)
     return func
 
 
 class TcpTelemetryCallback(BaseCallback):
-    """Logs mean cWnd (MSS), RTT (ms), and calibrated Base RTT (ms) every rollout."""
+    """Logs BBR telemetry across each 1,024-step rollout."""
     def __init__(self, verbose=0):
         super().__init__(verbose)
         self.cwnd_buf = []
@@ -27,13 +27,13 @@ class TcpTelemetryCallback(BaseCallback):
     def _on_step(self) -> bool:
         for info in self.locals.get("infos", []):
             if "cwnd_mss" in info:
-                self.cwnd_buf.append(info["cwnd_mss"])
+                self.cwnd_buf.append(float(info["cwnd_mss"]))
             if "raw_rtt" in info:
-                self.rtt_buf.append(info["raw_rtt"] / 1000.0)
+                self.rtt_buf.append(float(info["raw_rtt"]) / 1000.0)
             if "base_rtt_ms" in info:
-                self.base_rtt_buf.append(info["base_rtt_ms"])
+                self.base_rtt_buf.append(float(info["base_rtt_ms"]))
             if "rtt_inflation" in info:
-                self.infl_buf.append(info["rtt_inflation"])
+                self.infl_buf.append(float(info["rtt_inflation"]))
         return True
 
     def _on_rollout_end(self) -> None:
@@ -49,10 +49,10 @@ class TcpTelemetryCallback(BaseCallback):
 
 
 def main():
-    print("--- Phase 1: Environment Setup & Version Verification ---")
+    print("--- Phase 1: Environment Setup ---")
     port = 7144
-    total_timesteps = 500_000
-    episode_steps = 400
+    total_timesteps = 100_000
+    eval_steps = 400
     checkpoint_dir = "./checkpoints_ppo_tcp"
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -60,20 +60,10 @@ def main():
         lambda: CustomTcpEnv(
             port=port,
             step_time=0.1,
-            max_episode_steps=episode_steps
+            virtual_episode_steps=100
         )
     ])
 
-    # Sanity check to confirm the new 8-feature, 7-action CustomTcpEnv is active
-    assert raw_env.observation_space.shape == (8,), (
-        f"Expected 8-D observation space from updated tcp_env.py, got {raw_env.observation_space.shape}"
-    )
-    assert raw_env.action_space.n == 7, (
-        f"Expected 7 hybrid actions from updated tcp_env.py, got {raw_env.action_space.n}"
-    )
-    print("[*] Verified updated CustomTcpEnv: 8-D State Space, 7 Hybrid Actions, [6, 48] MSS Guardrails.")
-
-    # Keep norm_obs=False so BDP-centered coordinates are never shifted by running mean
     env = VecNormalize(
         raw_env,
         norm_obs=False,
@@ -82,35 +72,39 @@ def main():
         gamma=0.98
     )
 
+    print("[*] Performing initial handshake with ns-3...")
+    obs = env.reset()
+    print(f"[*] Handshake successful! Initial Observation: {obs}")
+
     policy_kwargs = dict(
         activation_fn=th.nn.SiLU,
         net_arch=dict(pi=[128, 128], vf=[128, 128])
     )
 
-    print(f"\n--- Phase 2: Training PPO Agent ({total_timesteps:,} Steps) ---")
+    print(f"\n--- Phase 2: Training Agent ({total_timesteps:,} Steps) ---")
     model = PPO(
         "MlpPolicy",
         env,
         verbose=1,
-        learning_rate=linear_schedule(3e-4, 2e-5),
-        n_steps=2048,
+        learning_rate=linear_schedule(3e-4, 3e-5),
+        n_steps=1024,
         batch_size=128,
-        n_epochs=10,
+        n_epochs=5,
         gamma=0.98,
         gae_lambda=0.95,
-        ent_coef=0.01,
+        ent_coef=0.015,
         vf_coef=0.5,
         max_grad_norm=0.5,
         clip_range=0.2,
-        target_kl=0.03,
+        target_kl=0.05,
         policy_kwargs=policy_kwargs,
         seed=42
     )
 
     checkpoint_cb = CheckpointCallback(
-        save_freq=50_000,
+        save_freq=25_000,
         save_path=checkpoint_dir,
-        name_prefix="ppo_tcp_500k",
+        name_prefix="ppo_tcp_100k",
         save_vecnormalize=True
     )
     telemetry_cb = TcpTelemetryCallback()
@@ -122,18 +116,20 @@ def main():
 
     model.save("ppo_tcp_normalized")
     env.save("vec_normalize.pkl")
-    print("[*] Training finished. Model and VecNormalize saved.")
+    print("[*] Training finished. Model saved.")
 
-    print("\n--- Phase 3: Deterministic Evaluation & Trace Logging (400 Steps) ---")
+    print("\n--- Phase 3: Evaluation & Trace Logging (400 Steps) ---")
+    # Disable training mode on both VecNormalize and CustomTcpEnv
     env.training = False
     env.norm_reward = False
+    raw_env.env_method("set_training_mode", False)
 
     trace_data = []
     obs = env.reset()
 
-    for step_count in range(episode_steps):
+    for step_count in range(eval_steps):
         action, _states = model.predict(obs, deterministic=True)
-        obs, rewards, dones, infos = env.step(action)
+        obs, reward, done, infos = env.step(action)
         step_info = infos[0]
 
         trace_data.append({
@@ -142,14 +138,11 @@ def main():
             "cwnd_mss": step_info["cwnd_mss"],
             "ssThresh": step_info["raw_ssthresh"],
             "rtt_us": step_info["raw_rtt"],
-            "rtt_ms": step_info["raw_rtt"] / 1000.0,
-            "base_rtt_ms": step_info["base_rtt_ms"],
-            "rtt_inflation": step_info["rtt_inflation"],
             "action": int(action[0]),
-            "reward": float(rewards[0])
+            "reward": float(reward[0])
         })
 
-        if dones[0]:
+        if done[0]:
             break
 
     env.close()
@@ -159,9 +152,10 @@ def main():
     csv_filename = "rl_tcp_traces.csv"
     df.to_csv(csv_filename, index=False)
     print(
-        f"[*] Saved {csv_filename} | Mean cWnd: {df['cwnd_mss'].mean():.2f} MSS | "
-        f"Mean RTT: {df['rtt_ms'].mean():.2f} ms | Calibrated Base RTT: {df['base_rtt_ms'].iloc[-1]:.2f} ms | "
-        f"Mean Step Reward: {df['reward'].mean():+.2f}"
+        f"[*] Evaluation traces saved to {csv_filename}! | "
+        f"Mean cWnd: {df['cwnd_mss'].mean():.2f} MSS | "
+        f"Mean RTT: {df['rtt_us'].mean() / 1000.0:.2f} ms | "
+        f"Mean Reward: {df['reward'].mean():+.2f}"
     )
 
 

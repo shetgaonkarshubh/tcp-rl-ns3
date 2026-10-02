@@ -5,7 +5,7 @@ PROJECT_DIR="$HOME/ns-allinone-3.40/ns-3.40/tcp_rl_project"
 NS3_DIR="$HOME/ns-allinone-3.40/ns-3.40"
 VENV_DIR="$HOME/ns-allinone-3.40/ns-3.40/venv"
 PORT=7144
-DURATION=6500
+DURATION=15000
 
 # Terminate existing session or orphaned background processes
 tmux kill-session -t "$SESSION" 2>/dev/null || true
