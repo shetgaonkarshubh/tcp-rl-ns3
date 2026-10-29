@@ -1,4 +1,4 @@
-# TCP-RL-ns3: Reinforcement Learning-Driven TCP Congestion Control in ns-3
+# TCP-RL-ns3: Deep Reinforcement Learning-Driven TCP Congestion Control in ns-3
 
 [![ns-3 Version](https://img.shields.io/badge/ns--3-3.40-blue.svg)](https://www.nsnam.org/)
 [![ns3-gym](https://img.shields.io/badge/ns3--gym-v1.0-orange.svg)](https://github.com/tkn-tub/ns3-gym)
