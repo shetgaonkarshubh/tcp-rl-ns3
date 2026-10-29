@@ -233,9 +233,11 @@ python realtime_demo.py --delay 0.04 --loop
 
 ## Citation & Authors
 
+## Citation & Authors
+
 **Authors**:
 * Shubh Shetgaonkar ([@shetgaonkarshubh](https://github.com/shetgaonkarshubh)) &mdash; shetgaonkarshubh@gmail.com
-* Abinav Pallathoor
+* Abinav Pallathoor ([@abinavpallathoor](https://github.com/abinavpallathoor)) &mdash; abinav.pallathoor@gmail.com
 
 If you find this project useful for academic research or networking experiments, please cite this repository:
 ```bibtex
