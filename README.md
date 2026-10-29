@@ -101,6 +101,8 @@ $$R = R_{\text{BDP}} + R_{\text{progress}} - C_{\text{overBDP}} - C_{\text{delay
 ├── rl-tcp.cc                  # ns-3 C++ simulation script (TcpGymEnv & network topology)
 ├── tcp_env.py                 # Gymnasium wrapper with Stochastic Markov Bottleneck engine
 ├── train.py                   # PPO training loop with Stable-Baselines3, callbacks, and evaluation
+├── realtime_demo.py           # Animated live HUD telemetry dashboard & interactive playback
+├── run_realtime_demo.sh       # Convenience launcher for the real-time demonstration
 ├── plot_results.py            # Generates publication-grade 3-panel performance visualization
 ├── check_env.py               # Gymnasium sanity check & observation verification script
 ├── run_pipeline_tmux.sh       # 3-pane synchronized tmux runner (ns-3 + PPO + live plotter)
@@ -191,6 +193,26 @@ This produces `rl_tcp_zoomed_performance.png`.
 
 ---
 
+### Real-Time Telemetry Dashboard (Live Demo)
+
+To watch the trained agent dynamically adapt to capacity shifts with an interactive real-time visual dashboard and animated Heads-Up Display (HUD):
+
+```bash
+# Launch via convenience runner
+./run_realtime_demo.sh
+
+# Or run directly with custom replay speed and looping:
+python realtime_demo.py --delay 0.04 --loop
+```
+
+**Key Dashboard Capabilities:**
+* **Real-Time HUD**: Displays live state telemetry (cWnd error, observed RTT, base RTT calibration, and queue inflation percentage).
+* **Operating Regime Detection**: Real-time status tags for Kleinrock optimal operation vs bufferbloat risk vs capacity adaptation.
+* **PPO Policy Decision Breakdown**: Highlights the discrete action taken (e.g., `[-4.0 MSS]` fast queue drain, `[0.0 MSS]` sweet-spot lock, `[+2.0 MSS]` probe).
+* **Interactive Controls**: `[Space]` Pause/Resume, `[Q]` Quit, step-by-step frame inspection.
+
+---
+
 ## Key Hyperparameters
 
 | Parameter | Value | Description |
@@ -211,13 +233,14 @@ This produces `rl_tcp_zoomed_performance.png`.
 
 ## Citation & Authors
 
-**Author**: Shubh Shetgaonkar ([@shetgaonkarshubh](https://github.com/shetgaonkarshubh))  
-**Email**: shetgaonkarshubh@gmail.com  
+**Authors**:
+* Shubh Shetgaonkar ([@shetgaonkarshubh](https://github.com/shetgaonkarshubh)) &mdash; shetgaonkarshubh@gmail.com
+* Abinav Pallathoor
 
 If you find this project useful for academic research or networking experiments, please cite this repository:
 ```bibtex
 @misc{shetgaonkar2026tcprl,
-  author = {Shubh Shetgaonkar},
+  author = {Shubh Shetgaonkar and Abinav Pallathoor},
   title = {TCP-RL-ns3: Reinforcement Learning-Driven TCP Congestion Control in ns-3},
   year = {2026},
   publisher = {GitHub},

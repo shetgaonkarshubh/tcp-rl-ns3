@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TCP-RL-ns3: Reinforcement Learning-Driven TCP Congestion Control</title>
+  <style>
+    :root {
+      --bg-color: #0b1120;
+      --card-bg: #1e293b;
+      --card-border: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-alt: #10b981;
+      --accent-warn: #f59e0b;
+      --accent-rose: #f43f5e;
+      --code-bg: #0f172a;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      background: var(--bg-color);
+      color: var(--text-main);
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .slide-deck {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .slide {
+      position: absolute;
+      width: 90vw;
+      max-width: 1200px;
+      height: 85vh;
+      background: #111827;
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      padding: 40px 48px;
+      display: none;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow-y: auto;
+      animation: fadeIn 0.3s ease-in-out;
+    }
+
+    .slide.active {
+      display: flex;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Header */
+    .slide-header {
+      margin-bottom: 24px;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--accent);
+      background: rgba(56, 189, 248, 0.1);
+      padding: 4px 10px;
+      border-radius: 9999px;
+      margin-bottom: 8px;
+      border: 1px solid rgba(56, 189, 248, 0.2);
+    }
+
+    h1.title {
+      font-size: 32px;
+      font-weight: 800;
+      color: #ffffff;
+      line-height: 1.2;
+      margin-bottom: 8px;
+    }
+
+    p.subtitle {
+      font-size: 15px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    /* Slide Content Grids */
+    .content-body {
+      flex: 1;
+      display: flex;
+      gap: 24px;
+      align-items: stretch;
+    }
+
+    .col-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      width: 100%;
+    }
+
+    .col-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 20px;
+      width: 100%;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .card.alert {
+      border-color: rgba(244, 63, 94, 0.3);
+      background: rgba(244, 63, 94, 0.05);
+    }
+
+    .card.success {
+      border-color: rgba(16, 185, 129, 0.3);
+      background: rgba(16, 185, 129, 0.05);
+    }
+
+    .card.highlight {
+      border-color: rgba(56, 189, 248, 0.4);
+      background: rgba(56, 189, 248, 0.06);
+    }
+
+    .card h3 {
+      font-size: 16px;
+      font-weight: 700;
+      color: #ffffff;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding-bottom: 8px;
+    }
+
+    ul.bullets {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 14px;
+      color: #cbd5e1;
+      line-height: 1.5;
+    }
+
+    ul.bullets li {
+      position: relative;
+      padding-left: 18px;
+    }
+
+    ul.bullets li::before {
+      content: "•";
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+      font-weight: bold;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      background: var(--code-bg);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #38bdf8;
+      font-size: 12.5px;
+    }
+
+    pre code {
+      display: block;
+      padding: 10px 14px;
+      border-radius: 6px;
+      line-height: 1.4;
+      overflow-x: auto;
+    }
+
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    table.data-table th, table.data-table td {
+      padding: 9px 12px;
+      border: 1px solid var(--card-border);
+      text-align: left;
+    }
+
+    table.data-table th {
+      background: #0f172a;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    table.data-table tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    /* Footer */
+    .slide-footer {
+      margin-top: 20px;
+      padding-top: 14px;
+      border-top: 1px solid var(--card-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Controls Bar */
+    .nav-bar {
+      position: fixed;
+      bottom: 16px;
+      display: flex;
+      gap: 12px;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(8px);
+      padding: 8px 16px;
+      border-radius: 9999px;
+      border: 1px solid var(--card-border);
+      z-index: 100;
+    }
+
+    .nav-btn {
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid #475569;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.15s ease;
+    }
+
+    .nav-btn:hover {
+      background: var(--accent);
+      color: #0f172a;
+      border-color: var(--accent);
+    }
+
+    .page-indicator {
+      display: flex;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent);
+      padding: 0 8px;
+    }
+
+    @media print {
+      body {
+        overflow: visible;
+        background: white;
+        color: black;
+      }
+      .nav-bar { display: none; }
+      .slide {
+        display: flex !important;
+        position: relative;
+        page-break-after: always;
+        height: 100vh;
+        width: 100vw;
+        border: none;
+        box-shadow: none;
+        background: white;
+        color: black;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<div class="slide-deck">
+
+  <!-- SLIDE 1: Title -->
+  <div class="slide active" id="slide-1">
+    <div style="flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 16px;">
+      <span class="badge" style="width: fit-content;">Autonomous Protocol Optimization</span>
+      <h1 class="title" style="font-size: 42px;">TCP-RL-ns3: Reinforcement Learning-Driven<br/><span style="color: var(--accent);">TCP Congestion Control</span> in ns-3</h1>
+      <p class="subtitle" style="font-size: 18px; max-width: 900px;">
+        Autonomous Bandwidth-Delay Product (BDP) Tracking, Bufferbloat Elimination, and Latency Optimization via PPO under Non-Stationary Bottlenecks.
+      </p>
+      
+      <div class="card highlight" style="margin-top: 24px; padding: 24px; max-width: 900px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; font-size: 14px;">
+          <div><strong>Authors:</strong> Shubh Shetgaonkar &amp; Abinav Pallathoor</div>
+          <div><strong>Simulator:</strong> ns-3.40 + ns3-gym (ZeroMQ / Protobuf)</div>
+          <div><strong>RL Architecture:</strong> Stable-Baselines3 (PPO) + PyTorch</div>
+          <div><strong>Repository:</strong> github.com/shetgaonkarshubh/tcp-rl-ns3</div>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span>TCP-RL-ns3 Project Presentation</span>
+      <span>Slide 1 / 8</span>
+    </div>
+  </div>
+
+  <!-- SLIDE 2: Motivation -->
+  <div class="slide" id="slide-2">
+    <div class="slide-header">
+      <span class="badge">Background & Motivation</span>
+      <h1 class="title">The Congestion Dilemma: Bufferbloat vs. Underutilization</h1>
+      <p class="subtitle">Traditional rule-based heuristics struggle with modern wireless and varying bandwidth links.</p>
+    </div>
+    <div class="content-body">
+      <div class="col-2">
+        <div class="card alert">
+          <h3 style="color: #fda4af;">1. Limitations of Legacy Protocols (Cubic, Reno)</h3>
+          <ul class="bullets">
+            <li><strong>Drop-Driven:</strong> Assume packet loss is the primary signal of bottleneck capacity.</li>
+            <li><strong>Severe Bufferbloat:</strong> Fill router queues until tail-drop occurs, inflating end-to-end RTT from tens of milliseconds to seconds.</li>
+            <li><strong>Multiplicative Backoff:</strong> Halve window size upon random drops, collapsing throughput on stochastic wireless/5G links.</li>
+          </ul>
+        </div>
+        <div class="card success">
+          <h3 style="color: #6ee7b7;">2. The Deep Reinforcement Learning Paradigm</h3>
+          <ul class="bullets">
+            <li><strong>Kleinrock Optimal Target:</strong> Operate at physical BDP (maximum throughput, minimum unloaded RTT).</li>
+            <li><strong>Multi-Dimensional Perception:</strong> Rather than a single loss event, observe flight size ratios, RTT inflation, and queue trends simultaneously.</li>
+            <li><strong>Asymmetric Actions:</strong> Learn to aggressively drain queues during sudden drops while smoothly holding steady-state capacity.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span>TCP-RL-ns3 Project Presentation</span>
+      <span>Slide 2 / 8</span>
+    </div>
+  </div>
+
+  <!-- SLIDE 3: Architecture -->
+  <div class="slide" id="slide-3">
+    <div class="slide-header">
+      <span class="badge">System Architecture</span>
+      <h1 class="title">Bi-Directional Co-Simulation Pipeline</h1>
+      <p class="subtitle">Real-time IPC bridge connecting ns-3 C++ network state machine to PyTorch / SB3.</p>
+    </div>
+    <div class="content-body">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Layer</th>
+            <th>Component</th>
+            <th>Responsibilities & Technical Characteristics</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Simulation</strong><br/>(C++17)</td>
+            <td><code>rl-tcp.cc</code><br/>ns-3.40 Core</td>
+            <td>
+              • Point-to-point network topology with bottleneck routers.<br/>
+              • Intercepts <code>TcpSocketState</code> (cWnd, ssThresh, RTT, unacknowledged flight segments).<br/>
+              • Enforces agent cwnd actions dynamically at 100 ms intervals.
+            </td>
+          </tr>
+          <tr>
+            <td><strong>IPC Channel</strong></td>
+            <td><code>ns3-gym</code><br/>ZeroMQ / Protobuf</td>
+            <td>
+              • High-throughput socket IPC on localhost port <code>7144</code>.<br/>
+              • Serializes C++ socket observables into Python Protocol Buffers with minimal latency.
+            </td>
+          </tr>
+          <tr>
+            <td><strong>Gymnasium Layer</strong></td>
+            <td><code>CustomTcpEnv</code><br/><code>tcp_env.py</code></td>
+            <td>
+              • Implements Stochastic Bottleneck Markov Engine.<br/>
+              • Calibrates physical base RTT (~84 ms) and derives 8-dim state features.<br/>
+              • Multi-objective reward synthesis balancing BDP tracking and latency.
+            </td>
+          </tr>
+          <tr>
+            <td><strong>RL Agent</strong></td>
+            <td><code>train.py</code><br/>Stable-Baselines3</td>
+            <td>
+              • PPO with Actor-Critic MLP (SiLU activations).<br/>
+              • Linear learning rate decay & running reward normalization (<code>VecNormalize</code>).
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="slide-footer">
+      <span>TCP-RL-ns3 Project Presentation</span>
+      <span>Slide 3 / 8</span>
+    </div>
+  </div>
+
+  <!-- SLIDE 4: Stochastic Bottleneck -->
+  <div class="slide" id="slide-4">
+    <div class="slide-header">
+      <span class="badge">Environment Dynamics</span>
+      <h1 class="title">Stochastic Bottleneck Markov Engine</h1>
+      <p class="subtitle">Simulating real-world non-stationary channels with severe, unpredictable capacity jumps.</p>
+    </div>
+    <div class="content-body">
+      <div class="col-2">
+        <div class="card">
+          <h3>Dynamic Bottleneck Transitions</h3>
+          <ul class="bullets">
+            <li><strong>Random Capacity Sampling:</strong> Target BDP uniformly sampled in <code>[15.0, 36.5] MSS</code>.</li>
+            <li><strong>Enforced Shift Magnitude:</strong> <code>|Δ BDP| ≥ 6.5 MSS</code> on every transition to test extreme adaptability.</li>
+            <li><strong>Stochastic Duration:</strong> Each capacity level persists for <code>45 to 85 steps</code> (4.5s to 8.5s) before transitioning.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Physical Queue & Latency Simulation</h3>
+          <ul class="bullets">
+            <li><strong>Adaptive Base RTT Tracking:</strong> Continuously estimates unloaded base RTT (<code>~84.0 ms</code>) using low-percentile filtering.</li>
+            <li><strong>Virtual Queue Buildup:</strong> Excess packets injected when <code>cWnd > BDP</code> simulate queuing delay and immediate RTT spikes.</li>
+            <li><strong>BBR Queue Ceiling:</strong> Set at <code>+25% above Base RTT (~105 ms)</code> as the bufferbloat guardrail.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span>TCP-RL-ns3 Project Presentation</span>
+      <span>Slide 4 / 8</span>
+    </div>
+  </div>
+
+  <!-- SLIDE 5: RL Formulation -->
+  <div class="slide" id="slide-5">
+    <div class="slide-header">
+      <span class="badge">Mathematical Formulation</span>
+      <h1 class="title">State Space, Actions & Multi-Objective Reward</h1>
+      <p class="subtitle">Formulated for sample-efficient convergence and aggressive bufferbloat penalization.</p>
+    </div>
+    <div class="content-body">
+      <div class="col-3">
+        <div class="card">
+          <h3>Observation Space (8D)</h3>
+          <ul class="bullets">
+            <li><code>(cWnd / BDP) - 1.0</code></li>
+            <li>Log-scaled cWnd size</li>
+            <li>Pipe In-Flight segment ratio</li>
+            <li>Relative RTT inflation <code>(RTT - RTT_base)/RTT_base</code></li>
+            <li>Step-to-step RTT trend gradient</li>
+            <li>TCP congestion state flags</li>
+            <li>Packet loss / timeout flag</li>
+            <li>Normalized target BDP</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Action Space (7 Discrete)</h3>
+          <ul class="bullets">
+            <li><code>0: -4.0 MSS</code> (Emergency Drain)</li>
+            <li><code>1: -2.0 MSS</code> (Moderate Backoff)</li>
+            <li><code>2: -0.5 MSS</code> (Fine Trim Down)</li>
+            <li><code>3:  0.0 MSS</code> (Sweet-Spot Hold)</li>
+            <li><code>4: +0.5 MSS</code> (Fine Trim Up)</li>
+            <li><code>5: +2.0 MSS</code> (Bandwidth Probe)</li>
+            <li><code>6: +4.0 MSS</code> (Fast Ramp-Up)</li>
+          </ul>
+        </div>
+        <div class="card highlight">
+          <h3>Reward Equation</h3>
+          <p style="font-size: 13px; font-family: monospace; color: #38bdf8; line-height: 1.4;">
+            R = R_bdp + R_progress<br/>
+            &nbsp;&nbsp;&nbsp;&nbsp;- C_over - C_delay - C_loss
+          </p>
+          <ul class="bullets" style="font-size: 12.5px;">
+            <li><strong>R_bdp:</strong> High reward near ±0.6 MSS.</li>
+            <li><strong>C_delay:</strong> <code>4.0 × (excess_delay)^1.5</code>.</li>
+            <li><strong>C_over:</strong> Quadratic penalty on excessive expansion.</li>
+            <li><strong>C_loss:</strong> -4.5 penalty upon drops.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span>TCP-RL-ns3 Project Presentation</span>
+      <span>Slide 5 / 8</span>
+    </div>
+  </div>
+
+  <!-- SLIDE 6: Training & Pipeline -->
+  <div class="slide" id="slide-6">
+    <div class="slide-header">
+      <span class="badge">Training & Orchestration</span>
+      <h1 class="title">PPO Pipeline & 3-Pane tmux Automation</h1>
+      <p class="subtitle">Complete automation of simulator startup, neural network training, and visual plotting.</p>
+    </div>
+    <div class="content-body">
+      <div class="col-2">
+        <div class="card">
+          <h3>PPO Hyperparameters</h3>
+          <table class="data-table" style="font-size: 12.5px;">
+            <tr><td><strong>Architecture</strong></td><td>MLP [128, 128] Actor-Critic</td></tr>
+            <tr><td><strong>Activation</strong></td><td>SiLU (Swish)</td></tr>
+            <tr><td><strong>Learning Rate</strong></td><td>3e-4 → 3e-5 (Linear Decay)</td></tr>
+            <tr><td><strong>Horizon</strong></td><td>1,024 steps / update</td></tr>
+            <tr><td><strong>Minibatch / Epochs</strong></td><td>128 batch size / 5 epochs</td></tr>
+            <tr><td><strong>Discount (γ) / GAE</strong></td><td>0.98 / 0.95</td></tr>
+            <tr><td><strong>Reward Scaling</strong></td><td>VecNormalize (clip=10.0)</td></tr>
+          </table>
+        </div>
+        <div class="card highlight">
+          <h3>3-Pane Automated Architecture (tmux)</h3>
+          <ul class="bullets">
+            <li><strong>Pane 0 (Left): ns-3 Engine</strong><br/>
+              <code>./ns3 run 'rl-tcp --openGymPort=7144'</code>
+            </li>
+            <li><strong>Pane 1 (Top-Right): RL Trainer</strong><br/>
+              Waits for port 7144 binding & runs <code>python train.py</code>.
+            </li>
+            <li><strong>Pane 2 (Bottom-Right): Trace Watcher</strong><br/>
+              Monitors for <code>rl_tcp_traces.csv</code> and executes <code>plot_results.py</code> to render performance graphics.
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span>TCP-RL-ns3 Project Presentation</span>
+      <span>Slide 6 / 8</span>
+    </div>
+  </div>
+
+  <!-- SLIDE 7: Evaluation Results -->
+  <div class="slide" id="slide-7">
+    <div class="slide-header">
+      <span class="badge">Benchmark Evaluation</span>
+      <h1 class="title">Empirical Results: BDP Tracking & Zero Bufferbloat</h1>
+      <p class="subtitle">400-step deterministic evaluation across multiple random bottleneck shifts.</p>
+    </div>
+    <div class="content-body" style="gap: 20px;">
+      <div style="flex: 1.3; background: #0f172a; border-radius: 8px; border: 1px solid var(--card-border); padding: 8px; display: flex; align-items: center; justify-content: center;">
+        <img src="rl_tcp_zoomed_performance.png" alt="RL TCP Zoomed Performance" style="max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px;">
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column; gap: 12px;">
+        <div class="card success">
+          <h3 style="color: #6ee7b7;">BDP Tracking MAE: 0.65 MSS</h3>
+          <p style="font-size: 13px; color: #cbd5e1;">Agent cWnd sticks tightly inside the ±1.5 MSS sweet-spot envelope (shaded orange region).</p>
+        </div>
+        <div class="card">
+          <h3>Mean RTT: 84.0 ms (Base RTT)</h3>
+          <p style="font-size: 13px; color: #cbd5e1;">RTT inflation is prevented; 95th-percentile latency remains well under the +25% queue ceiling.</p>
+        </div>
+        <div class="card highlight">
+          <h3>Asymmetric Drain Maneuvers</h3>
+          <p style="font-size: 13px; color: #cbd5e1;">Instant downward action spikes (-4.0 MSS) shed excess queue upon bottleneck collapse within 200 ms.</p>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span>TCP-RL-ns3 Project Presentation</span>
+      <span>Slide 7 / 8</span>
+    </div>
+  </div>
+
+  <!-- SLIDE 8: Getting Started -->
+  <div class="slide" id="slide-8">
+    <div class="slide-header">
+      <span class="badge">Reproduction & Future Scope</span>
+      <h1 class="title">Execution Guide & Research Horizons</h1>
+      <p class="subtitle">Reproducing results and expanding to multi-flow and satellite networks.</p>
+    </div>
+    <div class="content-body">
+      <div class="col-2">
+        <div class="card">
+          <h3>How to Run</h3>
+          <pre><code># 1. Clone & activate
+git clone https://github.com/shetgaonkarshubh/tcp-rl-ns3.git
+cd tcp-rl-ns3 && source venv/bin/activate
+
+# 2. Build ns-3 with rl-tcp.cc
+cp rl-tcp.cc ~/ns-allinone-3.40/ns-3.40/contrib/opengym/examples/rl-tcp/
+cd ~/ns-allinone-3.40/ns-3.40 && ./ns3 build
+
+# 3. Launch automated tmux pipeline
+cd ~/tcp-rl-ns3 && ./run_pipeline_tmux.sh
+
+# 4. Live interactive telemetry demo
+./run_realtime_demo.sh</code></pre>
+        </div>
+        <div class="card highlight">
+          <h3>Future Horizons</h3>
+          <ul class="bullets">
+            <li><strong>Multi-Flow Competition:</strong> Benchmark fairness against aggressive Cubic & BBRv2 flows.</li>
+            <li><strong>LEO Satellite Networks:</strong> Dynamic propagation delay modeling (Starlink).</li>
+            <li><strong>Kernel eBPF Implementation:</strong> Export trained MLP policy directly to Linux kernel XDP/eBPF.</li>
+            <li><strong>Continuous Control:</strong> Benchmark against continuous PPO / SAC pacing rates.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span>TCP-RL-ns3 Project Presentation</span>
+      <span>Slide 8 / 8</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- Navigation Controls -->
+<div class="nav-bar">
+  <button class="nav-btn" onclick="prevSlide()">❮ Prev</button>
+  <div class="page-indicator" id="slide-indicator">1 / 8</div>
+  <button class="nav-btn" onclick="nextSlide()">Next ❯</button>
+</div>
+
+<script>
+  let currentSlide = 1;
+  const totalSlides = 8;
+
+  function showSlide(index) {
+    if (index < 1) index = 1;
+    if (index > totalSlides) index = totalSlides;
+    currentSlide = index;
+
+    document.querySelectorAll('.slide').forEach((el, i) => {
+      el.classList.toggle('active', i + 1 === currentSlide);
+    });
+
+    document.getElementById('slide-indicator').textContent = `${currentSlide} / ${totalSlides}`;
+  }
+
+  function nextSlide() { showSlide(currentSlide + 1); }
+  function prevSlide() { showSlide(currentSlide - 1); }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'Space') nextSlide();
+    if (e.key === 'ArrowLeft') prevSlide();
+    if (e.key === 'f') {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen();
+      } else {
+        document.exitFullscreen();
+      }
+    }
+  });
+</script>
+
+</body>
+</html>
