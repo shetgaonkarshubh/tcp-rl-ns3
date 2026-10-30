@@ -18,12 +18,17 @@
     <!-- Header: title and actions for the current page -->
     <header class="topbar">
       <div class="hdr" data-for="run">
+        <span class="hdr-icon"><i data-lucide="flask-conical"></i></span>
         <div class="hdr-text">
           <h1>New run</h1>
           <p>Run the PPO agent and standard TCP on the same randomly changing bottleneck link.</p>
         </div>
+        <div class="hdr-actions">
+          <button class="btn on-accent solid" type="submit" form="runForm" id="runBtn"><i data-lucide="play"></i><span>Run experiment</span></button>
+        </div>
       </div>
       <div class="hdr" data-for="results" hidden>
+        <span class="hdr-icon"><i data-lucide="chart-column"></i></span>
         <div class="hdr-text">
           <input id="expName" class="name-input" aria-label="Experiment name">
           <p id="expMeta"></p>
@@ -34,6 +39,7 @@
         </div>
       </div>
       <div class="hdr" data-for="replay" hidden>
+        <span class="hdr-icon"><i data-lucide="circle-play"></i></span>
         <div class="hdr-text">
           <h1 id="replayTitle">Replay</h1>
           <p id="replaySub"></p>
@@ -44,6 +50,7 @@
         </div>
       </div>
       <div class="hdr" data-for="library" hidden>
+        <span class="hdr-icon"><i data-lucide="library"></i></span>
         <div class="hdr-text">
           <h1>Library</h1>
           <p>Saved experiments. Open one to see its results or replay it.</p>
@@ -118,7 +125,6 @@
                 <span class="info"><i data-lucide="layers"></i><span id="runCount">–</span></span>
                 <span class="info"><i data-lucide="timer"></i><span id="runEstimate">–</span></span>
               </div>
-              <button class="btn primary big" type="submit" id="runBtn"><i data-lucide="play"></i><span>Run experiment</span></button>
             </div>
           </div>
         </form>
