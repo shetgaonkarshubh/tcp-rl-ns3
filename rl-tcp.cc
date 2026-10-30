@@ -3,6 +3,7 @@
 #include "ns3/internet-module.h"
 #include "ns3/point-to-point-module.h"
 #include "ns3/applications-module.h"
+#include "ns3/traffic-control-module.h"
 #include "ns3/opengym-module.h"
 #include "ns3/tcp-socket-base.h"
 #include "ns3/tcp-congestion-ops.h"
@@ -13,6 +14,7 @@
 #include <random>
 #include <sstream>
 #include <iomanip>
+#include <fstream>
 #include <vector>
 
 using namespace ns3;
@@ -234,6 +236,14 @@ TcpGymEnv::RecordDrop(void)
 static Ptr<TcpGymEnv> g_gymEnv = nullptr;
 static std::mt19937 g_rng;
 
+// Bottleneck schedule parameters (overridable from the command line)
+static double g_minRateMbps = 3.5;
+static double g_maxRateMbps = 11.5;
+static double g_minHoldSec = 3.5;
+static double g_maxHoldSec = 9.0;
+static double g_currentMbps = 10.0;
+static uint64_t g_drops = 0;
+
 class TcpRlDynamicCongestion : public TcpNewReno
 {
 public:
@@ -291,9 +301,13 @@ NS_OBJECT_ENSURE_REGISTERED(TcpRlDynamicCongestion);
 // 3. STOCHASTIC BOTTLENECK SCHEDULER (Random Rate + Random Hold Duration)
 // ============================================================================
 static void
-DropTrace(Ptr<TcpGymEnv> env, Ptr<const Packet> p)
+DropTrace(Ptr<const Packet> p)
 {
-  env->RecordDrop();
+  ++g_drops;
+  if (g_gymEnv)
+    {
+      g_gymEnv->RecordDrop();
+    }
 }
 
 static void
@@ -302,12 +316,14 @@ RandomizeBottleneckBandwidth(NetDeviceContainer bottleneckDevs, Ptr<TcpGymEnv> e
   // 1. Sample a random bandwidth in [3.5, 11.5] Mbps (BDP in [12.7, 41.7] MSS)
   // Enforce a minimum jump of >= 2.0 Mbps from the current rate so every transition
   // forces the RL agent to actively adapt.
-  std::uniform_real_distribution<double> rateDist(3.5, 11.5);
-  std::uniform_real_distribution<double> holdTimeDist(3.5, 9.0); // 35 to 90 steps
+  std::uniform_real_distribution<double> rateDist(g_minRateMbps, g_maxRateMbps);
+  std::uniform_real_distribution<double> holdTimeDist(g_minHoldSec, g_maxHoldSec);
 
-  double prevMbps = env ? env->GetCurrentBottleneckMbps() : 10.0;
+  // Tracked globally (not via env) so every variant sees the identical schedule for a seed
+  double prevMbps = g_currentMbps;
+  double minJump = std::min(2.0, 0.5 * (g_maxRateMbps - g_minRateMbps));
   double newMbps = rateDist(g_rng);
-  for (int tries = 0; tries < 10 && std::abs(newMbps - prevMbps) < 2.0; ++tries)
+  for (int tries = 0; tries < 10 && std::abs(newMbps - prevMbps) < minJump; ++tries)
     {
       newMbps = rateDist(g_rng);
     }
@@ -326,6 +342,7 @@ RandomizeBottleneckBandwidth(NetDeviceContainer bottleneckDevs, Ptr<TcpGymEnv> e
       dev1->SetDataRate(newRate);
     }
 
+  g_currentMbps = newMbps;
   if (env)
     {
       env->SetCurrentBottleneckMbps(newMbps);
@@ -343,7 +360,49 @@ RandomizeBottleneckBandwidth(NetDeviceContainer bottleneckDevs, Ptr<TcpGymEnv> e
 }
 
 // ============================================================================
-// 4. MAIN FUNCTION
+// 4. TRACE SAMPLER (shared by every variant)
+// ============================================================================
+static std::ofstream g_traceFile;
+static uint32_t g_traceCwnd = 0;
+static int64_t g_traceRttUs = 0;
+static uint32_t g_traceInFlight = 0;
+static Ptr<PacketSink> g_sink;
+static Ptr<Queue<Packet>> g_bottleneckQueue;
+
+static void CwndTrace(uint32_t, uint32_t newVal) { g_traceCwnd = newVal; }
+static void RttTrace(Time, Time newVal) { g_traceRttUs = newVal.GetMicroSeconds(); }
+static void InFlightTrace(uint32_t, uint32_t newVal) { g_traceInFlight = newVal; }
+
+static void
+ConnectSocketTraces(void)
+{
+  std::string base = "/NodeList/0/$ns3::TcpL4Protocol/SocketList/0/";
+  Config::ConnectWithoutContextFailSafe(base + "CongestionWindow", MakeCallback(&CwndTrace));
+  Config::ConnectWithoutContextFailSafe(base + "RTT", MakeCallback(&RttTrace));
+  Config::ConnectWithoutContextFailSafe(base + "BytesInFlight", MakeCallback(&InFlightTrace));
+}
+
+static void
+SampleTrace(Time interval)
+{
+  g_traceFile << std::fixed << std::setprecision(1) << Simulator::Now().GetSeconds() << ","
+              << g_traceCwnd << "," << g_traceRttUs << "," << g_traceInFlight << ","
+              << std::setprecision(2) << g_currentMbps << ","
+              << (g_sink ? g_sink->GetTotalRx() : 0) << ","
+              << (g_bottleneckQueue ? g_bottleneckQueue->GetNPackets() : 0) << ","
+              << g_drops << "\n";
+  Simulator::Schedule(interval, &SampleTrace, interval);
+}
+
+static void
+ReportProgress(double total)
+{
+  std::cerr << "PROGRESS " << Simulator::Now().GetSeconds() << " " << total << std::endl;
+  Simulator::Schedule(Seconds(1.0), &ReportProgress, total);
+}
+
+// ============================================================================
+// 5. MAIN FUNCTION
 // ============================================================================
 int main(int argc, char *argv[])
 {
@@ -351,13 +410,48 @@ int main(int argc, char *argv[])
   double simTime = 15000.0;
   double envStepTime = 0.1;
   uint32_t randomSeed = 0; // 0 = use hardware random_device
+  std::string variant = "rl";
+  std::string tracePath;
+  uint32_t queueSize = 60;
+  double bottleneckDelayMs = 20.0;
 
   CommandLine cmd;
   cmd.AddValue("openGymPort", "Port for OpenGym IPC", openGymPort);
   cmd.AddValue("simTime", "Simulation time in seconds", simTime);
   cmd.AddValue("duration", "Simulation time in seconds (alias)", simTime);
   cmd.AddValue("seed", "RNG seed (0 for true hardware randomness)", randomSeed);
+  cmd.AddValue("variant", "Congestion control: rl | newreno | cubic | bbr", variant);
+  cmd.AddValue("trace", "Write a 100 ms CSV trace to this path", tracePath);
+  cmd.AddValue("minRate", "Minimum bottleneck rate (Mbps)", g_minRateMbps);
+  cmd.AddValue("maxRate", "Maximum bottleneck rate (Mbps)", g_maxRateMbps);
+  cmd.AddValue("minHold", "Minimum time between capacity shifts (s)", g_minHoldSec);
+  cmd.AddValue("maxHold", "Maximum time between capacity shifts (s)", g_maxHoldSec);
+  cmd.AddValue("queueSize", "Bottleneck DropTail queue size (packets)", queueSize);
+  cmd.AddValue("bottleneckDelay", "Bottleneck one-way delay (ms)", bottleneckDelayMs);
   cmd.Parse(argc, argv);
+
+  TypeId socketType;
+  if (variant == "rl")
+    {
+      socketType = TcpRlDynamicCongestion::GetTypeId();
+    }
+  else if (variant == "newreno")
+    {
+      socketType = TcpNewReno::GetTypeId();
+    }
+  else if (variant == "cubic")
+    {
+      socketType = TcpCubic::GetTypeId();
+    }
+  else if (variant == "bbr")
+    {
+      socketType = TcpBbr::GetTypeId();
+      Config::SetDefault("ns3::TcpSocketState::EnablePacing", BooleanValue(true));
+    }
+  else
+    {
+      NS_FATAL_ERROR("Unknown --variant=" << variant);
+    }
 
   if (randomSeed == 0)
     {
@@ -371,8 +465,10 @@ int main(int argc, char *argv[])
 
   Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(1448));
   Config::SetDefault("ns3::TcpSocket::DelAckCount", UintegerValue(1));
-  Config::SetDefault("ns3::TcpL4Protocol::SocketType",
-                     TypeIdValue(TcpRlDynamicCongestion::GetTypeId()));
+  // Large socket buffers so no variant is limited by the application/socket layer
+  Config::SetDefault("ns3::TcpSocket::SndBufSize", UintegerValue(4194304));
+  Config::SetDefault("ns3::TcpSocket::RcvBufSize", UintegerValue(6291456));
+  Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue(socketType));
 
   NodeContainer senders, routers, receivers;
   senders.Create(1);
@@ -387,8 +483,9 @@ int main(int argc, char *argv[])
   // Stochastic Bottleneck Link (20ms one-way delay, 60-packet DropTail queue)
   PointToPointHelper bottleneckLink;
   bottleneckLink.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
-  bottleneckLink.SetChannelAttribute("Delay", StringValue("20ms"));
-  bottleneckLink.SetQueue("ns3::DropTailQueue<Packet>", "MaxSize", StringValue("60p"));
+  bottleneckLink.SetChannelAttribute("Delay", TimeValue(MilliSeconds(bottleneckDelayMs)));
+  bottleneckLink.SetQueue("ns3::DropTailQueue<Packet>",
+                          "MaxSize", StringValue(std::to_string(queueSize) + "p"));
 
   NetDeviceContainer devSenderRouter = accessLink.Install(senders.Get(0), routers.Get(0));
   NetDeviceContainer devBottleneck = bottleneckLink.Install(routers.Get(0), routers.Get(1));
@@ -411,17 +508,30 @@ int main(int argc, char *argv[])
 
   Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
-  Ptr<OpenGymInterface> openGymInterface = CreateObject<OpenGymInterface>(openGymPort);
-  g_gymEnv = CreateObject<TcpGymEnv>();
-  g_gymEnv->SetOpenGymInterface(openGymInterface);
-  g_gymEnv->StartStepTimer(Seconds(envStepTime));
+  // Remove the default 1000-packet traffic-control queue on the bottleneck egress so the
+  // DropTail device queue above (queueSize packets) is the real bottleneck buffer
+  TrafficControlHelper tch;
+  tch.Uninstall(devBottleneck.Get(0));
+
+  Ptr<OpenGymInterface> openGymInterface = nullptr;
+  if (variant == "rl")
+    {
+      openGymInterface = CreateObject<OpenGymInterface>(openGymPort);
+      g_gymEnv = CreateObject<TcpGymEnv>();
+      g_gymEnv->SetOpenGymInterface(openGymInterface);
+      g_gymEnv->StartStepTimer(Seconds(envStepTime));
+    }
 
   Ptr<PointToPointNetDevice> bnDev = DynamicCast<PointToPointNetDevice>(devBottleneck.Get(0));
   if (bnDev && bnDev->GetQueue())
     {
-      bnDev->GetQueue()->TraceConnectWithoutContext(
-        "Drop", MakeBoundCallback(&DropTrace, g_gymEnv));
+      g_bottleneckQueue = bnDev->GetQueue();
+      g_bottleneckQueue->TraceConnectWithoutContext("Drop", MakeCallback(&DropTrace));
     }
+  // With no queue disc, packets arriving while the device queue is full are dropped by
+  // the traffic-control layer (TcDrop) rather than by the queue itself
+  routers.Get(0)->GetObject<TrafficControlLayer>()->TraceConnectWithoutContext(
+    "TcDrop", MakeCallback(&DropTrace));
 
   // Start the random bottleneck scheduler
   Simulator::Schedule(Seconds(0.0), &RandomizeBottleneckBandwidth, devBottleneck, g_gymEnv);
@@ -431,6 +541,7 @@ int main(int argc, char *argv[])
   PacketSinkHelper packetSinkHelper("ns3::TcpSocketFactory",
                                     InetSocketAddress(Ipv4Address::GetAny(), sinkPort));
   ApplicationContainer sinkApps = packetSinkHelper.Install(receivers.Get(0));
+  g_sink = DynamicCast<PacketSink>(sinkApps.Get(0));
   sinkApps.Start(Seconds(0.0));
   sinkApps.Stop(Seconds(simTime));
 
@@ -440,9 +551,25 @@ int main(int argc, char *argv[])
   sourceApps.Start(Seconds(0.1));
   sourceApps.Stop(Seconds(simTime));
 
+  Simulator::Schedule(Seconds(0.11), &ConnectSocketTraces);
+  if (!tracePath.empty())
+    {
+      g_traceFile.open(tracePath);
+      g_traceFile << "t,cwnd_bytes,rtt_us,bytes_in_flight,bottleneck_mbps,rx_bytes,queue_pkts,drops\n";
+      Simulator::Schedule(Seconds(0.2), &SampleTrace, Seconds(0.1));
+    }
+  Simulator::Schedule(Seconds(1.0), &ReportProgress, simTime);
+
   Simulator::Stop(Seconds(simTime));
   Simulator::Run();
-  openGymInterface->NotifySimulationEnd();
+  if (g_traceFile.is_open())
+    {
+      g_traceFile.close();
+    }
+  if (openGymInterface)
+    {
+      openGymInterface->NotifySimulationEnd();
+    }
   Simulator::Destroy();
   return 0;
 }
