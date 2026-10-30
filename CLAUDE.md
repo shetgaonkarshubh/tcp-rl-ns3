@@ -35,7 +35,7 @@ dashboard/run_dashboard.sh  # FastAPI + static UI at http://localhost:8000 (need
 - `runner.py` runs seeds × algorithms as parallel ns-3 subprocesses (`--variant=rl|newreno|cubic|bbr --trace=…`). An RL run also starts `rl_eval.py` on a free port (Python binds, ns-3 connects; order doesn't matter). Progress comes from the simulator's `PROGRESS t total` stderr lines.
 - Results live in `experiments/<id>/` (gitignored). Unsaved runs sit in `experiments/_scratch/` and are wiped by the next run; Save moves them up a level.
 - `metrics.py` derives throughput from `rx_bytes` deltas and the ideal window (BDP) from capacity × base RTT, where base RTT = 2 × (bottleneckDelay + 1 ms).
-- Frontend is plain `static/{index.html,app.css,app.js}` (Chart.js and Lucide from a CDN, no build step). Algorithm colours are CSS variables (`--algo-*`), validated as a set for colourblind separation on the warm dark canvas; keep that order if adding series. The UI is a light dashboard (grey canvas, white cards, orange primary #d04a0a; PPO is the orange chart series) with a full-height sidebar.
+- Frontend is plain `static/{index.html,app.css,app.js}` (Chart.js and Lucide from a CDN, no build step). Algorithm colours are CSS variables (`--algo-*`), validated as a set for colourblind separation on white; keep that order if adding series. The UI is a light dashboard (grey canvas, white cards, orange primary #d04a0a; PPO is the orange chart series) with a full-height sidebar.
 
 ### Pipeline scripts — read before running
 
