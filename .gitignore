@@ -16,3 +16,6 @@ ns3_sim.log
 # OS metadata
 .DS_Store
 .vscode/
+
+# Dashboard experiments (saved and scratch)
+experiments/

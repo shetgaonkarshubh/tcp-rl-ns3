@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Congestion Lab</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%232a78d6'/><path d='M5 15h4l2-6 2 8 2-4h4' stroke='white' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <nav class="rail" aria-label="Main">
+      <div class="brand" title="Congestion Lab"><i data-lucide="activity"></i></div>
+      <div class="rail-items">
+        <span class="rail-indicator" aria-hidden="true"></span>
+        <button class="rail-btn" data-view="run" title="New experiment"><i data-lucide="flask-conical"></i><span>Run</span></button>
+        <button class="rail-btn" data-view="results" title="Results" disabled><i data-lucide="chart-column"></i><span>Results</span></button>
+        <button class="rail-btn" data-view="replay" title="Replay" disabled><i data-lucide="circle-play"></i><span>Replay</span></button>
+        <button class="rail-btn" data-view="library" title="Saved experiments"><i data-lucide="library"></i><span>Library</span></button>
+      </div>
+      <button class="rail-btn theme-btn" id="themeToggle" title="Switch theme"><i data-lucide="sun-moon"></i></button>
+    </nav>
+
+    <main class="stage">
+      <!-- RUN -->
+      <section class="view" id="view-run">
+        <header class="view-head">
+          <div>
+            <h1>Compare congestion control</h1>
+            <p class="lede">Run the PPO agent and classic TCP on the same randomly shifting bottleneck, then compare throughput and delay.</p>
+          </div>
+        </header>
+
+        <div class="run-grid">
+          <form class="panel form" id="runForm" autocomplete="off">
+            <fieldset>
+              <legend>Algorithms</legend>
+              <div class="algo-toggles" id="algoToggles"></div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Experiment</legend>
+              <div class="field-row">
+                <label class="field"><span>Test runs</span>
+                  <div class="stepper"><button type="button" data-step="-1" aria-label="Fewer runs"><i data-lucide="minus"></i></button><input name="runs" type="number" inputmode="numeric"><button type="button" data-step="1" aria-label="More runs"><i data-lucide="plus"></i></button></div>
+                </label>
+                <label class="field"><span>Simulated time <em>s</em></span><input name="duration" type="number" step="10"></label>
+              </div>
+              <label class="field"><span>Starting seed</span><input name="seed" type="number"></label>
+              <p class="hint" id="runEstimate"></p>
+            </fieldset>
+
+            <fieldset>
+              <legend>Network</legend>
+              <div class="field-row">
+                <label class="field"><span>Capacity min <em>Mbps</em></span><input name="minRate" type="number" step="0.5"></label>
+                <label class="field"><span>Capacity max <em>Mbps</em></span><input name="maxRate" type="number" step="0.5"></label>
+              </div>
+              <div class="field-row">
+                <label class="field"><span>Shift every, min <em>s</em></span><input name="minHold" type="number" step="0.5"></label>
+                <label class="field"><span>Shift every, max <em>s</em></span><input name="maxHold" type="number" step="0.5"></label>
+              </div>
+              <div class="field-row">
+                <label class="field"><span>Queue size <em>packets</em></span><input name="queueSize" type="number" step="10"></label>
+                <label class="field"><span>Link delay <em>ms</em></span><input name="bottleneckDelay" type="number" step="5"></label>
+              </div>
+              <p class="hint warn" id="trainingHint" hidden><i data-lucide="info"></i><span>Some settings are outside what the agent was trained on, so expect weaker PPO results.</span></p>
+            </fieldset>
+
+            <fieldset id="modelField">
+              <legend>PPO model</legend>
+              <label class="field"><span class="sr-only">Model file</span><select name="model" id="modelSelect"></select></label>
+            </fieldset>
+
+            <p class="form-error" id="formError" role="alert" hidden></p>
+            <button class="btn primary big" type="submit" id="runBtn"><i data-lucide="play"></i><span>Run experiment</span></button>
+          </form>
+
+          <div class="panel preview">
+            <div class="preview-head">
+              <h2 id="previewTitle">The test network</h2>
+              <p id="previewSub" class="muted">One TCP flow crosses a bottleneck whose speed jumps at random. Every algorithm sees the exact same jumps.</p>
+            </div>
+            <div class="lanes" id="previewLanes"></div>
+            <ul class="key">
+              <li><span class="k-pipe"></span>Bottleneck link. Thicker means more capacity.</li>
+              <li><span class="k-dot"></span>Data packets on their way to the receiver.</li>
+              <li><span class="k-queue"><i></i><i></i><i></i></span>Packets waiting in the router's queue. A full queue adds delay, then drops packets.</li>
+            </ul>
+
+            <div class="progress-block" id="progressBlock" hidden>
+              <div class="progress-top">
+                <span id="progressLabel">Starting simulations</span>
+                <span class="num" id="progressEta"></span>
+              </div>
+              <div class="bar"><span id="progressFill"></span></div>
+              <ul class="chips" id="runChips"></ul>
+              <button class="btn ghost" type="button" id="cancelBtn"><i data-lucide="square"></i><span>Cancel</span></button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RESULTS -->
+      <section class="view" id="view-results" hidden>
+        <header class="view-head results-head">
+          <div class="title-edit">
+            <input id="expName" class="name-input" aria-label="Experiment name">
+            <p class="muted" id="expMeta"></p>
+          </div>
+          <div class="actions">
+            <button class="btn" id="saveBtn"><i data-lucide="bookmark"></i><span>Save experiment</span></button>
+            <button class="btn primary" id="toReplayBtn"><i data-lucide="circle-play"></i><span>Replay</span></button>
+          </div>
+        </header>
+
+        <div class="results-grid">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Average per algorithm</h2>
+              <div class="seg" id="metricSeg" role="tablist"></div>
+            </div>
+            <p class="metric-note muted" id="metricNote"></p>
+            <div class="bars" id="metricBars"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Throughput against delay</h2>
+              <span class="muted small">Each mark is one run. Up and left is better.</span>
+            </div>
+            <div class="chart-box scatter-box"><canvas id="scatter"></canvas></div>
+            <div class="legend" id="scatterLegend"></div>
+          </div>
+
+          <div class="panel span-2">
+            <div class="panel-head"><h2>All metrics</h2><span class="muted small">Mean ± standard deviation across runs</span></div>
+            <div class="table-wrap"><table class="table" id="summaryTable"></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- REPLAY -->
+      <section class="view" id="view-replay" hidden>
+        <header class="view-head replay-head">
+          <div>
+            <h1 id="replayTitle">Replay</h1>
+            <p class="muted" id="replaySub"></p>
+          </div>
+          <div class="replay-pickers">
+            <label class="field inline"><span>Compare PPO with</span><select id="baselineSelect"></select></label>
+            <label class="field inline"><span>Run</span><select id="seedSelect"></select></label>
+          </div>
+        </header>
+
+        <div class="panel replay-net">
+          <div class="lanes" id="replayLanes"></div>
+        </div>
+
+        <div class="transport panel">
+          <button class="icon-btn play" id="playBtn" aria-label="Play"><i data-lucide="play"></i></button>
+          <span class="num time" id="timeNow">0.0 s</span>
+          <input type="range" id="scrubber" min="0" max="0" value="0" step="1" aria-label="Replay position">
+          <span class="num time muted" id="timeEnd">0.0 s</span>
+          <div class="seg speed" id="speedSeg" role="radiogroup" aria-label="Playback speed"></div>
+        </div>
+
+        <div class="panel charts">
+          <div class="chart-row"><h3>Congestion window <em>packets</em></h3><div class="chart-box"><canvas id="cCwnd"></canvas><span class="playhead"></span></div></div>
+          <div class="chart-row"><h3>Round-trip time <em>ms</em></h3><div class="chart-box"><canvas id="cRtt"></canvas><span class="playhead"></span></div></div>
+          <div class="chart-row"><h3>Throughput <em>Mbps</em></h3><div class="chart-box"><canvas id="cThr"></canvas><span class="playhead"></span></div></div>
+          <div class="legend" id="replayLegend"></div>
+        </div>
+      </section>
+
+      <!-- LIBRARY -->
+      <section class="view" id="view-library" hidden>
+        <header class="view-head">
+          <div>
+            <h1>Saved experiments</h1>
+            <p class="lede">Open one to see its results or replay it.</p>
+          </div>
+        </header>
+        <div class="panel lib" id="libList"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

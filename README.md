@@ -213,6 +213,18 @@ python realtime_demo.py --delay 0.04 --loop
 
 ---
 
+### Comparison Dashboard (PPO vs NewReno, CUBIC, BBR)
+
+A local web app that runs the trained agent and ns-3's built-in TCP variants on the **same** randomly shifting bottleneck (same seed, identical capacity schedule), then compares throughput, delay, drops and window tracking. Experiments can be saved and replayed with an animated view of each flow's queue.
+
+```bash
+pip install fastapi uvicorn          # in the project venv
+./dashboard/build_sim.sh             # links rl-tcp.cc into ns-3 and rebuilds it (set NS3_DIR if ns-3 lives elsewhere)
+./dashboard/run_dashboard.sh         # opens http://localhost:8000
+```
+
+---
+
 ## Key Hyperparameters
 
 | Parameter | Value | Description |
