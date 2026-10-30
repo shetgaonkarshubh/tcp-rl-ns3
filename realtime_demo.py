@@ -1,64 +1,123 @@
+"""
+Interactive Multi-Model Real-Time TCP Congestion Control Dashboard.
+Supports live switching between:
+  [1] Oracle Baseline (Privileged PPO, MAE: 0.65 MSS, Mean RTT: 84.0 ms)
+  [2] Naive Blind Agent (No Oracle / Basic Feedback, MAE: 3.75 MSS, Mean RTT: 90.1 ms)
+  [3] Tuned Little's Law Agent (Physics-Driven Real-World, MAE: 1.41 MSS, Mean RTT: 85.1 ms)
+
+Hotkeys:
+  [1, 2, 3] : Switch models on the fly
+  [Space]   : Pause / Resume playback
+  [Right/N] : Single step forward
+  [R]       : Restart from Step 0
+  [Q / Esc] : Quit
+"""
+
 import sys
 import os
-import time
 import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from matplotlib.patches import Rectangle
 
-ACTION_DESCRIPTIONS = {
-    0: ("-4.0 MSS", "Fast Queue Drain (Contraction)", "#d62728"),
-    1: ("-2.0 MSS", "Moderate Backoff", "#e377c2"),
-    2: ("-0.5 MSS", "Fine Downward Trim", "#ff7f0e"),
-    3: (" 0.0 MSS", "BDP Steady-State Lock", "#2ca02c"),
-    4: ("+0.5 MSS", "Fine Upward Trim", "#17becf"),
-    5: ("+2.0 MSS", "Moderate Probe", "#9467bd"),
-    6: ("+4.0 MSS", "Fast Ramp-Up (Expansion)", "#1f77b4"),
+MODELS_METADATA = {
+    1: {
+        "title": "Model 1: Oracle Baseline (Privileged PPO)",
+        "tag": "ORACLE (SUPERVISED)",
+        "file": "/home/shubh/tcpai/rl_tcp_traces.csv",
+        "description": "Agent directly observes true BDP in 8D observation vector. Theoretical upper bound.",
+        "expected_mae": "0.65 MSS",
+        "expected_rtt": "84.0 ms",
+        "color": "#1f77b4"
+    },
+    2: {
+        "title": "Model 2: Naive Blind Agent (Zero Oracle)",
+        "tag": "NAIVE BLIND (UNPRIVILEGED)",
+        "file": "/home/shubh/tcpai/oracle_free_tcp/blind_agent_benchmark.csv",
+        "description": "Zero BDP knowledge. Relies on raw latency inflation and throughput ratios without physical delay scaling.",
+        "expected_mae": "3.75 MSS",
+        "expected_rtt": "90.1 ms",
+        "color": "#ff7f0e"
+    },
+    3: {
+        "title": "Model 3: Little's Law Tuned Agent (Real-World Physics)",
+        "tag": "LITTLE'S LAW TUNED (STATE-OF-THE-ART)",
+        "file": "/home/shubh/tcpai/oracle_free_tcp/perfect_blind_results.csv",
+        "description": "Zero BDP knowledge. Uses Little's Law ratio BDP = cWnd * (BaseRTT / RTT) to infer exact capacity upon queuing.",
+        "expected_mae": "1.41 MSS",
+        "expected_rtt": "85.1 ms",
+        "color": "#2ca02c"
+    }
 }
 
-CONG_STATES = {
-    0: "CA_OPEN (Normal)",
-    1: "CA_DISORDER",
-    2: "CA_CWR",
-    3: "CA_RECOVERY (Loss)",
-    4: "CA_LOSS (Timeout)"
-}
+
+def load_dataset(model_id):
+    meta = MODELS_METADATA[model_id]
+    filepath = meta["file"]
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"Missing dataset for Model {model_id}: {filepath}")
+
+    df = pd.read_csv(filepath)
+    steps = np.arange(len(df))
+
+    if model_id == 1:
+        cwnd_mss = df["cwnd_mss"].to_numpy(dtype=float)
+        raw_ssthresh = (df["ssThresh"] / 1448.0).to_numpy(dtype=float)
+        target_mss = np.where(raw_ssthresh > 500.0, np.nan, raw_ssthresh)
+        rtt_ms = (df["rtt_us"] / 1000.0).to_numpy(dtype=float)
+        actions = df["action"].to_numpy(dtype=int)
+        rewards = df["reward"].to_numpy(dtype=float)
+        base_rtt_ms = 84.0
+
+    elif model_id == 2:
+        cwnd_mss = df["cwnd"].to_numpy(dtype=float)
+        target_mss = df["capacity"].to_numpy(dtype=float)
+        rtt_ms = df["rtt_ms"].to_numpy(dtype=float)
+        # Approximate discrete actions based on delta cWnd
+        diffs = np.diff(cwnd_mss, prepend=cwnd_mss[0])
+        actions = np.where(diffs < -2.0, 0, np.where(diffs < 0, 1, np.where(diffs == 0, 3, np.where(diffs < 2.0, 4, 6))))
+        rewards = ((df["delivered"] / 10.0) - (df["inflation"] * 4.0)).to_numpy(dtype=float)
+        base_rtt_ms = 84.0
+
+    elif model_id == 3:
+        cwnd_mss = df["cwnd_mss"].to_numpy(dtype=float)
+        target_mss = df["true_capacity_mss"].to_numpy(dtype=float)
+        rtt_ms = df["rtt_ms"].to_numpy(dtype=float)
+        rewards = df["reward"].to_numpy(dtype=float)
+        # Map continuous delta action to nearest discrete ID
+        deltas = df["action_offset"].to_numpy(dtype=float)
+        actions = np.where(deltas < -2.0, 0, np.where(deltas < -0.2, 1, np.where(abs(deltas) <= 0.2, 3, np.where(deltas < 2.0, 4, 6))))
+        base_rtt_ms = float(df["base_rtt_ms"].iloc[0]) if "base_rtt_ms" in df.columns else 84.0
+
+    valid_target = np.nan_to_num(target_mss, nan=0.0)
+    shift_indices = set(np.where(np.abs(np.diff(valid_target)) > 1.0)[0] + 1)
+
+    return {
+        "df": df,
+        "steps": steps,
+        "total_steps": len(df),
+        "cwnd_mss": cwnd_mss,
+        "target_mss": target_mss,
+        "rtt_ms": rtt_ms,
+        "actions": actions,
+        "rewards": rewards,
+        "base_rtt_ms": base_rtt_ms,
+        "shift_indices": shift_indices
+    }
+
 
 class RealtimeTcpDashboard:
-    def __init__(self, trace_file="rl_tcp_traces.csv", step_delay=0.06, loop=False):
-        self.trace_file = trace_file
+    def __init__(self, initial_model=3, step_delay=0.05, loop=False):
+        self.current_model_id = initial_model
         self.step_delay = step_delay
         self.loop = loop
         self.paused = False
         self.step_once = False
+        self.reload_model = False
+        self.running = True
 
-        if not os.path.exists(self.trace_file):
-            raise FileNotFoundError(f"Trace file not found: {self.trace_file}")
-
-        self.df = pd.read_csv(self.trace_file)
-        self.total_steps = len(self.df)
-
-        # Parse data
-        if "cwnd_mss" in self.df.columns:
-            self.cwnd_mss = self.df["cwnd_mss"].to_numpy(dtype=float)
-        else:
-            self.cwnd_mss = (self.df["cwnd"] / 1448.0).to_numpy(dtype=float)
-
-        raw_ssthresh = (self.df["ssThresh"] / 1448.0).to_numpy(dtype=float)
-        self.ssthresh_mss = np.where(raw_ssthresh > 500.0, np.nan, raw_ssthresh)
-        self.rtt_ms = (self.df["rtt_us"] / 1000.0).to_numpy(dtype=float)
-        self.actions = self.df["action"].to_numpy(dtype=int)
-        self.rewards = self.df["reward"].to_numpy(dtype=float)
-
-        self.base_rtt_ms = float(np.nanpercentile(self.rtt_ms, 5))
-        if self.base_rtt_ms < 1.0:
-            self.base_rtt_ms = 84.0
-
-        # Precompute shifts
-        valid_target = np.nan_to_num(self.ssthresh_mss, nan=0.0)
-        self.shift_indices = set(np.where(np.abs(np.diff(valid_target)) > 1.0)[0] + 1)
+        self.data = load_dataset(self.current_model_id)
 
     def on_key(self, event):
         if event.key == " ":
@@ -66,162 +125,206 @@ class RealtimeTcpDashboard:
         elif event.key in ["right", "n"]:
             self.step_once = True
             self.paused = True
+        elif event.key == "r":
+            self.reload_model = True
+        elif event.key in ["1", "2", "3"]:
+            new_id = int(event.key)
+            if new_id != self.current_model_id:
+                print(f"\n[*] Switching live to Model {new_id}: {MODELS_METADATA[new_id]['title']}")
+                self.current_model_id = new_id
+                self.data = load_dataset(self.current_model_id)
+                self.reload_model = True
         elif event.key in ["q", "escape"]:
+            self.running = False
             plt.close("all")
-            sys.exit(0)
 
     def run(self):
         plt.ion()
-        fig = plt.figure(figsize=(15, 8.5))
-        fig.canvas.manager.set_window_title("Real-Time PPO TCP Congestion Control Visualizer")
+        fig = plt.figure(figsize=(14.5, 9.0), facecolor="#12141a")
         fig.canvas.mpl_connect("key_press_event", self.on_key)
+        gs = gridspec.GridSpec(3, 3, width_ratios=[2.4, 2.4, 1.6], hspace=0.35, wspace=0.25, left=0.06, right=0.96, top=0.91, bottom=0.07)
 
-        # 2 columns: Plots on Left, Telemetry HUD Card on Right
-        gs = gridspec.GridSpec(2, 2, width_ratios=[2.5, 1.2], height_ratios=[1.2, 1.0], figure=fig)
-        ax_cwnd = fig.add_subplot(gs[0, 0])
-        ax_rtt = fig.add_subplot(gs[1, 0], sharex=ax_cwnd)
-        ax_hud = fig.add_subplot(gs[:, 1])
-
+        ax_cwnd = fig.add_subplot(gs[0, :2], facecolor="#1a1c23")
+        ax_rtt = fig.add_subplot(gs[1, :2], facecolor="#1a1c23", sharex=ax_cwnd)
+        ax_reward = fig.add_subplot(gs[2, :2], facecolor="#1a1c23", sharex=ax_cwnd)
+        ax_hud = fig.add_subplot(gs[:, 2], facecolor="#16181f")
         ax_hud.axis("off")
-        fig.patch.set_facecolor("#18191c")
-
-        # Configure Left Plots styling
-        for ax in [ax_cwnd, ax_rtt]:
-            ax.set_facecolor("#22242a")
-            ax.grid(True, linestyle="--", alpha=0.3, color="#555863")
-            ax.tick_params(colors="#dcdcdc", labelsize=9)
-            for spine in ax.spines.values():
-                spine.set_color("#444751")
-
-        ax_cwnd.set_ylabel("cWnd / Dynamic BDP (MSS)", color="#f0f0f0", fontweight="bold", fontsize=10)
-        ax_cwnd.set_ylim(0, max(np.nanmax(self.cwnd_mss), np.nanmax(self.ssthresh_mss)) * 1.25)
-        ax_rtt.set_ylabel("Round Trip Time (ms)", color="#f0f0f0", fontweight="bold", fontsize=10)
-        ax_rtt.set_xlabel("Simulation Step (100 ms / step)", color="#f0f0f0", fontweight="bold", fontsize=10)
-        ax_rtt.set_ylim(self.base_rtt_ms * 0.85, max(np.nanmax(self.rtt_ms) * 1.12, self.base_rtt_ms * 1.5))
-
-        # Static reference lines
-        ax_rtt.axhline(self.base_rtt_ms, color="#38ef7d", linestyle=":", linewidth=1.5, label=f"Base RTT (~{self.base_rtt_ms:.1f}ms)")
-        ax_rtt.axhline(self.base_rtt_ms * 1.25, color="#ff4b4b", linestyle="-.", linewidth=1.2, label="+25% Queue Ceiling")
-        ax_rtt.legend(loc="upper right", facecolor="#2b2d35", edgecolor="#444751", labelcolor="#eaeaea", fontsize=8)
-
-        # Dynamic plot lines
-        (line_target,) = ax_cwnd.step([], [], where="post", color="#ffa116", linestyle="--", linewidth=1.8, label="Dynamic BDP Target")
-        (line_cwnd,) = ax_cwnd.plot([], [], color="#00b4d8", linewidth=2.3, label="Agent cWnd")
-        (line_rtt,) = ax_rtt.plot([], [], color="#ff6b6b", linewidth=1.8, label="Observed RTT")
-
-        ax_cwnd.legend(loc="upper right", facecolor="#2b2d35", edgecolor="#444751", labelcolor="#eaeaea", fontsize=8)
-
-        print("\n" + "=" * 95)
-        print(" [★] REAL-TIME PPO TCP CONGESTION CONTROL TELEMETRY STREAM ")
-        print(" Controls: [Space] Pause/Resume | [Right Arrow] Step 1 frame | [Q] Quit")
-        print("=" * 95)
-        print(f"{'Step':>5} | {'Target BDP':>10} | {'Agent cWnd':>10} | {'Error':>9} | {'RTT (ms)':>9} | {'Action':<32} | {'Reward':>7}")
-        print("-" * 95)
 
         step_idx = 0
-        while True:
-            if step_idx >= self.total_steps:
+
+        while self.running:
+            if self.reload_model:
+                step_idx = 0
+                self.reload_model = False
+                ax_cwnd.cla()
+                ax_rtt.cla()
+                ax_reward.cla()
+
+            if step_idx >= self.data["total_steps"]:
                 if self.loop:
                     step_idx = 0
-                    time.sleep(1.0)
+                    continue
                 else:
+                    self.paused = True
+
+            while self.paused and self.running:
+                fig.canvas.flush_events()
+                plt.pause(0.08)
+                if self.step_once:
+                    self.step_once = False
+                    break
+                if self.reload_model:
                     break
 
-            if self.paused and not self.step_once:
-                plt.pause(0.05)
-                continue
-            self.step_once = False
+            if not self.running:
+                break
 
             curr_step = step_idx
-            cur_cwnd = self.cwnd_mss[curr_step]
-            cur_target = self.ssthresh_mss[curr_step]
-            cur_rtt = self.rtt_ms[curr_step]
-            cur_act = self.actions[curr_step]
-            cur_rew = self.rewards[curr_step]
-            err = cur_cwnd - cur_target
-            infl = max(0.0, (cur_rtt - self.base_rtt_ms) / self.base_rtt_ms) * 100.0
+            curr_cwnd = self.data["cwnd_mss"][curr_step]
+            cur_target = self.data["target_mss"][curr_step]
+            cur_rtt = self.data["rtt_ms"][curr_step]
+            cur_rew = self.data["rewards"][curr_step]
+            base_rtt = self.data["base_rtt_ms"]
 
-            act_delta, act_name, act_color = ACTION_DESCRIPTIONS.get(cur_act, (f"Act {cur_act}", "Unknown", "#ffffff"))
+            err = curr_cwnd - cur_target if not np.isnan(cur_target) else 0.0
+            infl = max(0.0, (cur_rtt - base_rtt) / base_rtt) * 100.0
 
-            # Update Plot Lines
-            x_range = np.arange(curr_step + 1)
-            line_target.set_data(x_range, self.ssthresh_mss[: curr_step + 1])
-            line_cwnd.set_data(x_range, self.cwnd_mss[: curr_step + 1])
-            line_rtt.set_data(x_range, self.rtt_ms[: curr_step + 1])
+            # Header title
+            meta = MODELS_METADATA[self.current_model_id]
+            fig.suptitle(
+                f"TCP CONGESTION CONTROL MULTI-MODEL LIVE DASHBOARD  |  [Active: {meta['title']}]\n"
+                f"Press [1] Oracle (0.65 MSS) | [2] Naive Blind (3.75 MSS) | [3] Little's Law Tuned (1.41 MSS) | [Space] Pause/Play | [Q] Quit",
+                color="#f8fafc", fontsize=11, fontweight="bold", y=0.97
+            )
 
-            # Adjust x-axis window dynamically
-            min_x = max(0, curr_step - 80)
-            max_x = max(80, curr_step + 5)
-            ax_cwnd.set_xlim(min_x, max_x)
+            # Subplot 1: Congestion Window
+            ax_cwnd.cla()
+            ax_cwnd.set_facecolor("#1a1c23")
+            ax_cwnd.grid(True, color="#2e323e", linestyle="--", alpha=0.6)
+            ax_cwnd.plot(self.data["steps"][:curr_step+1], self.data["cwnd_mss"][:curr_step+1], color=meta["color"], linewidth=2.2, label=f"cWnd ({meta['tag']})")
+            ax_cwnd.step(self.data["steps"][:curr_step+1], self.data["target_mss"][:curr_step+1], where="post", color="#ff4b4b", linestyle="--", linewidth=1.8, label="Physical Bottleneck BDP")
+            ax_cwnd.fill_between(self.data["steps"][:curr_step+1], self.data["target_mss"][:curr_step+1] - 1.5, self.data["target_mss"][:curr_step+1] + 1.5, step="post", color="#ffa116", alpha=0.15, label="BBR Sweet-Spot (±1.5 MSS)")
+            ax_cwnd.scatter([curr_step], [curr_cwnd], color="#ffffff", s=55, zorder=5)
+            ax_cwnd.set_ylabel("cWnd (MSS)", color="#cbd5e1", fontsize=9.5, fontweight="bold")
+            ax_cwnd.set_ylim(0, 52)
+            ax_cwnd.set_xlim(0, self.data["total_steps"])
+            ax_cwnd.tick_params(colors="#94a3b8", labelsize=8.5)
+            ax_cwnd.legend(loc="upper right", facecolor="#22242a", edgecolor="#444751", labelcolor="#cbd5e1", fontsize=8.5)
 
-            # Check if this step is a dynamic bottleneck shift
-            is_shift = curr_step in self.shift_indices
-            if is_shift:
-                ax_cwnd.axvline(curr_step, color="#ff7f0e", linestyle=":", alpha=0.7)
-                ax_rtt.axvline(curr_step, color="#ff7f0e", linestyle=":", alpha=0.7)
+            # Subplot 2: RTT
+            ax_rtt.cla()
+            ax_rtt.set_facecolor("#1a1c23")
+            ax_rtt.grid(True, color="#2e323e", linestyle="--", alpha=0.6)
+            ax_rtt.plot(self.data["steps"][:curr_step+1], self.data["rtt_ms"][:curr_step+1], color="#ffa116", linewidth=1.8, label="Observed RTT (ms)")
+            ax_rtt.axhline(y=base_rtt, color="#818cf8", linestyle=":", linewidth=1.4, label=f"Physical Base RTT ({base_rtt:.1f} ms)")
+            ax_rtt.axhline(y=base_rtt * 1.25, color="#f43f5e", linestyle="-.", linewidth=1.2, label=f"Bufferbloat Ceiling ({base_rtt*1.25:.1f} ms)")
+            ax_rtt.scatter([curr_step], [cur_rtt], color="#ffffff", s=45, zorder=5)
+            ax_rtt.set_ylabel("RTT (ms)", color="#cbd5e1", fontsize=9.5, fontweight="bold")
+            ax_rtt.set_ylim(base_rtt * 0.85, base_rtt * 1.45)
+            ax_rtt.tick_params(colors="#94a3b8", labelsize=8.5)
+            ax_rtt.legend(loc="upper right", facecolor="#22242a", edgecolor="#444751", labelcolor="#cbd5e1", fontsize=8.5)
 
-            # Render Telemetry HUD
-            ax_hud.clear()
+            # Subplot 3: Cumulative / Step Reward
+            ax_reward.cla()
+            ax_reward.set_facecolor("#1a1c23")
+            ax_reward.grid(True, color="#2e323e", linestyle="--", alpha=0.6)
+            ax_reward.plot(self.data["steps"][:curr_step+1], self.data["rewards"][:curr_step+1], color="#34d399", alpha=0.4, label="Step Reward")
+            smooth_rew = pd.Series(self.data["rewards"][:curr_step+1]).rolling(10, min_periods=1).mean().to_numpy()
+            ax_reward.plot(self.data["steps"][:curr_step+1], smooth_rew, color="#10b981", linewidth=2.0, label="Rolling Mean Reward")
+            ax_reward.axhline(y=0.0, color="#64748b", linestyle=":", linewidth=1.0)
+            ax_reward.set_ylabel("Reward", color="#cbd5e1", fontsize=9.5, fontweight="bold")
+            ax_reward.set_xlabel("Evaluation Step (100 ms / step)", color="#cbd5e1", fontsize=9.5, fontweight="bold")
+            ax_reward.tick_params(colors="#94a3b8", labelsize=8.5)
+            ax_reward.legend(loc="lower right", facecolor="#22242a", edgecolor="#444751", labelcolor="#cbd5e1", fontsize=8.5)
+
+            # Mark shifts
+            for s_idx in self.data["shift_indices"]:
+                if s_idx <= curr_step:
+                    for ax in (ax_cwnd, ax_rtt, ax_reward):
+                        ax.axvline(x=s_idx, color="#64748b", linestyle="--", linewidth=1.0, alpha=0.6)
+
+            # Subplot 4: Heads-Up Display (HUD)
+            ax_hud.cla()
             ax_hud.axis("off")
-            ax_hud.set_facecolor("#18191c")
 
-            status_color = "#38ef7d" if abs(err) <= 1.5 and infl < 25.0 else ("#ff4b4b" if infl >= 25.0 or err > 3.0 else "#ffa116")
-            status_text = "OPTIMAL (Kleinrock)" if abs(err) <= 1.5 and infl < 25.0 else ("BUFFERBLOAT RISK" if infl >= 25.0 else "ADAPTING")
+            status_color = "#34d399" if abs(err) <= 1.5 and infl < 10.0 else ("#f43f5e" if infl >= 25.0 or err > 3.0 else "#fbbf24")
+            status_text = "OPTIMAL (Kleinrock)" if abs(err) <= 1.5 and infl < 10.0 else ("BUFFERBLOAT RISK" if infl >= 25.0 else "TRACKING SHIFT")
+
+            cum_mae = np.nanmean(np.abs(self.data["cwnd_mss"][:curr_step+1] - self.data["target_mss"][:curr_step+1]))
+            mean_lat = np.mean(self.data["rtt_ms"][:curr_step+1])
 
             hud_text = (
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"   LIVE AGENT TELEMETRY\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"• Step: {curr_step:03d} / {self.total_steps}  ({curr_step*0.1:.1f}s)\n"
+                f"═══════════════════════════════\n"
+                f"     TELEMETRY HUD [{meta['tag'][:11]}]\n"
+                f"═══════════════════════════════\n\n"
+                f"• Step: {curr_step:03d} / {self.data['total_steps']}  ({curr_step*0.1:4.1f}s)\n"
                 f"• System State: {status_text}\n\n"
-                f"▶ OBSERVATION RECEIVED:\n"
+                f"▶ OBSERVATION READINGS:\n"
                 f"  ├ Bottleneck BDP : {cur_target:5.1f} MSS\n"
-                f"  ├ Current cWnd   : {cur_cwnd:5.1f} MSS\n"
+                f"  ├ Current cWnd   : {curr_cwnd:5.1f} MSS\n"
                 f"  ├ Window Error   : {err:+5.1f} MSS\n"
                 f"  ├ Observed RTT   : {cur_rtt:5.1f} ms\n"
-                f"  ├ Base RTT (min) : {self.base_rtt_ms:5.1f} ms\n"
+                f"  ├ Base RTT (min) : {base_rtt:5.1f} ms\n"
                 f"  └ Queue Inflation: {infl:+5.1f} %\n\n"
-                f"▶ DECISION (PPO POLICY):\n"
-                f"  ├ Action ID      : [{cur_act}]\n"
-                f"  ├ Window Delta   : {act_delta}\n"
-                f"  └ Strategy       : {act_name}\n\n"
-                f"▶ PERFORMANCE FEEDBACK:\n"
-                f"  ├ Step Reward    : {cur_rew:+.3f}\n"
-                f"  ├ Cumulative Rew : {np.sum(self.rewards[:curr_step+1]):+.1f}\n"
-                f"  └ Mean Abs Error : {np.nanmean(np.abs(self.cwnd_mss[:curr_step+1] - self.ssthresh_mss[:curr_step+1])):4.2f} MSS\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f" [Space] Pause/Resume | [Q] Quit"
+                f"▶ BENCHMARK SCORECARD:\n"
+                f"  ├ Cumulative MAE : {cum_mae:5.2f} MSS\n"
+                f"  ├ Target MAE     : {meta['expected_mae']}\n"
+                f"  ├ Mean Latency   : {mean_lat:5.1f} ms\n"
+                f"  └ Target Latency : {meta['expected_rtt']}\n\n"
+                f"▶ LIVE CONTROLS:\n"
+                f"  [1] Oracle Baseline\n"
+                f"  [2] Naive Blind Agent\n"
+                f"  [3] Little's Law Tuned (Best)\n"
+                f"  [Space] Pause/Play  [R] Reset\n"
+                f"═══════════════════════════════"
             )
 
             ax_hud.text(
                 0.05, 0.95,
                 hud_text,
                 transform=ax_hud.transAxes,
-                fontsize=9.5,
+                fontsize=9.0,
                 family="monospace",
                 verticalalignment="top",
-                color="#e6e6e6",
-                bbox=dict(boxstyle="round,pad=0.6", facecolor="#22242a", edgecolor="#444751", alpha=0.95)
+                color="#e2e8f0",
+                bbox=dict(boxstyle="round,pad=0.7", facecolor="#1e222d", edgecolor=status_color, alpha=0.95, linewidth=1.5)
             )
-
-            # Terminal log row
-            shift_indicator = "⚡ SHIFT" if is_shift else "       "
-            print(f"{curr_step:>5} | {cur_target:8.1f} MSS | {cur_cwnd:8.1f} MSS | {err:+7.1f} MSS | {cur_rtt:7.1f} ms | [{cur_act}] {act_delta:<8} {act_name:<18} | {cur_rew:>+7.3f} {shift_indicator}")
 
             plt.pause(self.step_delay)
             step_idx += 1
 
-        print("\n[*] Demonstration finished successfully! Keeping window open.")
-        print("    Press 'Q' or close window to exit.")
         plt.ioff()
         plt.show()
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Real-Time TCP PPO Dashboard")
-    parser.add_argument("--trace", default="rl_tcp_traces.csv", help="Trace CSV file to visualize")
-    parser.add_argument("--delay", type=float, default=0.05, help="Delay in seconds between steps (speed)")
+
+def main():
+    parser = argparse.ArgumentParser(description="Multi-Model Real-Time TCP Congestion Control Dashboard")
+    parser.add_argument("--model", type=int, choices=[1, 2, 3], default=None, help="1=Oracle Baseline, 2=Naive Blind, 3=Little's Law Tuned")
+    parser.add_argument("--delay", type=float, default=0.045, help="Step playback delay in seconds (speed)")
     parser.add_argument("--loop", action="store_true", help="Loop playback indefinitely")
     args = parser.parse_args()
 
-    dashboard = RealtimeTcpDashboard(trace_file=args.trace, step_delay=args.delay, loop=args.loop)
+    chosen_model = args.model
+    if chosen_model is None:
+        print("\n" + "=" * 70)
+        print("          SELECT A MODEL TO LAUNCH THE REAL-TIME DEMO          ")
+        print("=" * 70)
+        print("  [1] Model 1: Oracle Baseline (Privileged PPO, MAE: 0.65 MSS, 84.0 ms)")
+        print("  [2] Model 2: Naive Blind Agent (No Oracle, MAE: 3.75 MSS, 90.1 ms)")
+        print("  [3] Model 3: Little's Law Tuned Agent (State-of-the-Art, MAE: 1.41 MSS, 85.1 ms) [RECOMMENDED]")
+        print("=" * 70)
+        user_choice = input("Enter model number [1, 2, or 3] (default: 3): ").strip()
+        if user_choice in ["1", "2", "3"]:
+            chosen_model = int(user_choice)
+        else:
+            chosen_model = 3
+
+    print(f"\n[*] Launching Real-Time Dashboard with {MODELS_METADATA[chosen_model]['title']}...")
+    print("    Tip: You can switch models dynamically anytime by pressing [1], [2], or [3] on your keyboard!")
+
+    dashboard = RealtimeTcpDashboard(initial_model=chosen_model, step_delay=args.delay, loop=args.loop)
     dashboard.run()
+
+
+if __name__ == "__main__":
+    main()
