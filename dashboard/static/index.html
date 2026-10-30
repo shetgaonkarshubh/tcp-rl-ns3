@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f3f4f6">
+  <meta name="theme-color" content="#d04a0a">
   <title>TCP Congestion Control Comparison</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='5' fill='%23d04a0a'/><path d='M5 15h4l2-6 2 8 2-4h4' stroke='white' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -15,6 +15,45 @@
 </head>
 <body>
   <div class="shell">
+    <!-- Header: title and actions for the current page -->
+    <header class="topbar">
+      <div class="hdr" data-for="run">
+        <div class="hdr-text">
+          <h1>New run</h1>
+          <p>Run the PPO agent and standard TCP on the same randomly changing bottleneck link.</p>
+        </div>
+      </div>
+      <div class="hdr" data-for="results" hidden>
+        <div class="hdr-text">
+          <input id="expName" class="name-input" aria-label="Experiment name">
+          <p id="expMeta"></p>
+        </div>
+        <div class="hdr-actions">
+          <button class="btn on-accent" id="saveBtn"><i data-lucide="bookmark"></i><span>Save</span></button>
+          <button class="btn on-accent solid" id="toReplayBtn"><i data-lucide="circle-play"></i><span>Replay</span></button>
+        </div>
+      </div>
+      <div class="hdr" data-for="replay" hidden>
+        <div class="hdr-text">
+          <h1 id="replayTitle">Replay</h1>
+          <p id="replaySub"></p>
+        </div>
+        <div class="hdr-actions">
+          <label class="hdr-field"><span>Compare PPO with</span><select id="baselineSelect"></select></label>
+          <label class="hdr-field"><span>Run</span><select id="seedSelect"></select></label>
+        </div>
+      </div>
+      <div class="hdr" data-for="library" hidden>
+        <div class="hdr-text">
+          <h1>Library</h1>
+          <p>Saved experiments. Open one to see its results or replay it.</p>
+        </div>
+        <div class="hdr-actions">
+          <button class="btn on-accent solid" type="button" data-goto="run"><i data-lucide="plus"></i><span>New run</span></button>
+        </div>
+      </div>
+    </header>
+
     <!-- Sidebar -->
     <aside class="sidebar">
       <nav class="side-nav" aria-label="Main">
@@ -31,174 +70,149 @@
       </div>
     </aside>
 
-    <div class="main">
+    <main class="main">
       <!-- RUN -->
-      <section class="view" id="view-run">
-        <header class="page-head">
-          <div>
-            <h1>New run</h1>
-            <p class="sub">Run the PPO agent and standard TCP on the same randomly changing bottleneck link.</p>
-          </div>
-          <div class="actions">
-            <span class="estimate" id="runEstimate"></span>
-            <button class="btn primary" type="submit" form="runForm" id="runBtn"><i data-lucide="play"></i><span>Run experiment</span></button>
-          </div>
-        </header>
+      <section class="view view-run" id="view-run">
+        <form class="card setup" id="runForm" autocomplete="off">
+          <div class="card-head"><h2>Experiment setup</h2></div>
 
-        <p class="form-error" id="formError" role="alert" hidden></p>
+          <div class="setup-body">
+            <section class="setup-sec">
+              <h3>Algorithms</h3>
+              <p class="sec-help">Choose what to compare. Every selected algorithm runs on the same network in each test run.</p>
+              <div class="algo-toggles" id="algoToggles"></div>
+              <label class="field" id="modelField"><span>PPO model</span><select name="model" id="modelSelect"></select></label>
+            </section>
 
-        <form class="config-grid" id="runForm" autocomplete="off">
-          <div class="card">
-            <h2>Algorithms</h2>
-            <div class="algo-toggles" id="algoToggles"></div>
-            <label class="field" id="modelField"><span>PPO model</span><select name="model" id="modelSelect"></select></label>
+            <section class="setup-sec">
+              <h3>Experiment</h3>
+              <p class="sec-help">More runs give a more reliable average. Each run uses the next seed, so results can be reproduced exactly.</p>
+              <div class="field-row">
+                <label class="field"><span>Test runs</span>
+                  <div class="stepper"><button type="button" data-step="-1" aria-label="Fewer runs"><i data-lucide="minus"></i></button><input name="runs" type="number" inputmode="numeric"><button type="button" data-step="1" aria-label="More runs"><i data-lucide="plus"></i></button></div>
+                </label>
+                <label class="field"><span>Simulated time <em>s</em></span><input name="duration" type="number" step="10"></label>
+                <label class="field"><span>Starting seed</span><input name="seed" type="number"></label>
+              </div>
+            </section>
+
+            <section class="setup-sec">
+              <h3>Network</h3>
+              <p class="sec-help">The bottleneck's capacity jumps to a random value in this range, holding each value for a random time.</p>
+              <div class="field-row">
+                <label class="field"><span>Capacity min <em>Mbps</em></span><input name="minRate" type="number" step="0.5"></label>
+                <label class="field"><span>Capacity max <em>Mbps</em></span><input name="maxRate" type="number" step="0.5"></label>
+                <label class="field"><span>Link delay <em>ms</em></span><input name="bottleneckDelay" type="number" step="5"></label>
+                <label class="field"><span>Change every, min <em>s</em></span><input name="minHold" type="number" step="0.5"></label>
+                <label class="field"><span>Change every, max <em>s</em></span><input name="maxHold" type="number" step="0.5"></label>
+                <label class="field"><span>Queue size <em>packets</em></span><input name="queueSize" type="number" step="10"></label>
+              </div>
+              <p class="note warn" id="trainingHint" hidden><i data-lucide="triangle-alert"></i><span>These settings are outside the agent's training conditions, so expect weaker PPO results.</span></p>
+            </section>
           </div>
 
-          <div class="card">
-            <h2>Experiment</h2>
-            <label class="field"><span>Test runs</span>
-              <div class="stepper"><button type="button" data-step="-1" aria-label="Fewer runs"><i data-lucide="minus"></i></button><input name="runs" type="number" inputmode="numeric"><button type="button" data-step="1" aria-label="More runs"><i data-lucide="plus"></i></button></div>
-            </label>
-            <div class="field-row">
-              <label class="field"><span>Simulated time <em>s</em></span><input name="duration" type="number" step="10"></label>
-              <label class="field"><span>Starting seed</span><input name="seed" type="number"></label>
+          <div class="setup-foot">
+            <p class="form-error" id="formError" role="alert" hidden></p>
+            <div class="foot-row">
+              <div class="info-row">
+                <span class="info"><i data-lucide="layers"></i><span id="runCount">–</span></span>
+                <span class="info"><i data-lucide="timer"></i><span id="runEstimate">–</span></span>
+              </div>
+              <button class="btn primary big" type="submit" id="runBtn"><i data-lucide="play"></i><span>Run experiment</span></button>
             </div>
-            <p class="hint">Each run uses its own seed, so every algorithm in a run sees the same capacity changes.</p>
-          </div>
-
-          <div class="card">
-            <h2>Network</h2>
-            <div class="field-row">
-              <label class="field"><span>Capacity min <em>Mbps</em></span><input name="minRate" type="number" step="0.5"></label>
-              <label class="field"><span>Capacity max <em>Mbps</em></span><input name="maxRate" type="number" step="0.5"></label>
-              <label class="field"><span>Change every, min <em>s</em></span><input name="minHold" type="number" step="0.5"></label>
-              <label class="field"><span>Change every, max <em>s</em></span><input name="maxHold" type="number" step="0.5"></label>
-              <label class="field"><span>Queue size <em>packets</em></span><input name="queueSize" type="number" step="10"></label>
-              <label class="field"><span>Link delay <em>ms</em></span><input name="bottleneckDelay" type="number" step="5"></label>
-            </div>
-            <p class="hint warn" id="trainingHint" hidden>Outside the agent's training conditions. Expect weaker PPO results.</p>
           </div>
         </form>
 
-        <!-- Progress (replaces recent list while running) -->
-        <div class="card progress" id="progressBlock" hidden>
-          <div class="card-head">
-            <h2 id="progressLabel">Starting simulations</h2>
-            <div class="actions">
-              <span class="estimate" id="progressEta"></span>
-              <button class="btn" type="button" id="cancelBtn"><i data-lucide="square"></i><span>Cancel</span></button>
+        <div class="side-col">
+          <div class="card progress" id="progressBlock" hidden>
+            <div class="card-head">
+              <h2 id="progressLabel">Starting simulations</h2>
+              <button class="btn small" type="button" id="cancelBtn"><i data-lucide="square"></i><span>Cancel</span></button>
             </div>
+            <div class="info-row">
+              <span class="info"><i data-lucide="circle-check"></i><span id="progressDone">0 done</span></span>
+              <span class="info"><i data-lucide="hourglass"></i><span id="progressEta">Estimating</span></span>
+            </div>
+            <div class="bar"><span id="progressFill"></span></div>
+            <div class="jobs" id="runChips"></div>
           </div>
-          <div class="bar"><span id="progressFill"></span></div>
-          <div class="jobs" id="runChips"></div>
-        </div>
 
-        <div class="home-grid" id="recentBlock">
-          <div class="card">
-            <div class="card-head"><h2>Recent experiments</h2><button class="btn ghost small" type="button" data-goto="library">View all</button></div>
-            <div id="recentList"></div>
-          </div>
           <div class="card" id="latestCard" hidden>
-            <div class="card-head"><h2>Latest result</h2><button class="btn ghost small" type="button" id="latestOpen">Open</button></div>
-            <p class="hint" id="latestName"></p>
+            <div class="card-head"><h2>Latest result</h2><button class="btn small" type="button" id="latestOpen">Open</button></div>
+            <p class="info block"><i data-lucide="file-chart-column"></i><span id="latestName"></span></p>
             <div id="latestTable"></div>
+          </div>
+
+          <div class="card fill" id="recentBlock">
+            <div class="card-head"><h2>Recent experiments</h2><button class="btn small" type="button" data-goto="library">View all</button></div>
+            <div class="scroll" id="recentList"></div>
           </div>
         </div>
       </section>
 
       <!-- RESULTS -->
-      <section class="view" id="view-results" hidden>
-        <header class="page-head">
-          <div class="title-edit">
-            <input id="expName" class="name-input" aria-label="Experiment name">
-            <p class="sub" id="expMeta"></p>
-          </div>
-          <div class="actions">
-            <button class="btn" id="saveBtn"><i data-lucide="bookmark"></i><span>Save</span></button>
-            <button class="btn primary" id="toReplayBtn"><i data-lucide="circle-play"></i><span>Replay</span></button>
-          </div>
-        </header>
-
+      <section class="view view-results" id="view-results" hidden>
         <div class="kpis" id="kpis"></div>
 
-        <div class="results-grid">
-          <div class="card">
-            <div class="card-head">
-              <h2>Average per algorithm</h2>
-              <div class="seg" id="metricSeg" role="tablist"></div>
-            </div>
-            <p class="metric-note" id="metricNote"></p>
-            <div class="bars" id="metricBars"></div>
+        <div class="card">
+          <div class="card-head">
+            <h2>Average per algorithm</h2>
+            <div class="seg" id="metricSeg" role="tablist"></div>
           </div>
+          <p class="info block" id="metricNoteBox"><i data-lucide="info"></i><span id="metricNote"></span></p>
+          <div class="bars" id="metricBars"></div>
+        </div>
 
-          <div class="card">
-            <div class="card-head">
-              <h2>Throughput vs delay</h2>
-              <span class="hint">One mark per run. Top left is better.</span>
-            </div>
-            <div class="chart-box"><canvas id="scatter"></canvas></div>
-            <div class="legend" id="scatterLegend"></div>
+        <div class="card">
+          <div class="card-head">
+            <h2>Throughput vs delay</h2>
+            <span class="info"><i data-lucide="move-up-left"></i><span>One mark per run. Top left is better.</span></span>
           </div>
+          <div class="chart-box grow"><canvas id="scatter"></canvas></div>
+          <div class="legend" id="scatterLegend"></div>
+        </div>
 
-          <div class="card span-2">
-            <div class="card-head"><h2>All metrics</h2><span class="hint">Mean ± standard deviation across runs. Best value in each column is highlighted.</span></div>
-            <div class="table-wrap"><table class="table" id="summaryTable"></table></div>
-          </div>
+        <div class="card span-2">
+          <div class="card-head"><h2>All metrics</h2><span class="info"><i data-lucide="sigma"></i><span>Mean ± standard deviation across runs. Best value per column in green.</span></span></div>
+          <div class="table-wrap"><table class="table" id="summaryTable"></table></div>
         </div>
       </section>
 
       <!-- REPLAY -->
-      <section class="view" id="view-replay" hidden>
-        <header class="page-head">
-          <div>
-            <h1 id="replayTitle">Replay</h1>
-            <p class="sub" id="replaySub"></p>
-          </div>
-          <div class="actions">
-            <label class="field inline"><span>Compare PPO with</span><select id="baselineSelect"></select></label>
-            <label class="field inline"><span>Run</span><select id="seedSelect"></select></label>
-          </div>
-        </header>
-
-        <div class="replay-grid">
-          <div class="replay-col">
+      <section class="view view-replay" id="view-replay" hidden>
+        <div class="replay-col">
           <div class="card replay-net">
             <div class="lanes" id="replayLanes"></div>
             <div class="transport">
               <button class="icon-btn play" id="playBtn" aria-label="Play"><i data-lucide="play"></i></button>
-              <span class="time" id="timeNow">0.0 s</span>
+              <span class="info time"><i data-lucide="clock"></i><span id="timeNow">0.0 s</span></span>
               <input type="range" id="scrubber" min="0" max="0" value="0" step="1" aria-label="Replay position">
-              <span class="time muted" id="timeEnd">0.0 s</span>
+              <span class="info time"><i data-lucide="flag"></i><span id="timeEnd">0.0 s</span></span>
               <div class="seg speed" id="speedSeg" role="radiogroup" aria-label="Playback speed"></div>
             </div>
           </div>
-          <div class="card">
-            <div class="card-head"><h2>At this moment</h2><span class="hint" id="snapTime"></span></div>
+          <div class="card fill">
+            <div class="card-head"><h2>At this moment</h2></div>
+            <div class="info-row" id="snapInfo"></div>
             <div class="table-wrap"><table class="table" id="snapTable"></table></div>
+            <h3 class="sub-head">Average from the start until now</h3>
+            <div class="table-wrap"><table class="table" id="sofarTable"></table></div>
           </div>
-          </div>
+        </div>
 
-          <div class="card charts">
-            <div class="chart-row"><h3>Congestion window <em>packets</em></h3><div class="chart-box"><canvas id="cCwnd"></canvas><span class="playhead"></span></div></div>
-            <div class="chart-row"><h3>Round-trip time <em>ms</em></h3><div class="chart-box"><canvas id="cRtt"></canvas><span class="playhead"></span></div></div>
-            <div class="chart-row"><h3>Throughput <em>Mbps</em></h3><div class="chart-box"><canvas id="cThr"></canvas><span class="playhead"></span></div></div>
-            <div class="legend" id="replayLegend"></div>
-          </div>
+        <div class="card charts">
+          <div class="chart-row"><h3>Congestion window <em>packets</em></h3><div class="chart-box"><canvas id="cCwnd"></canvas><span class="playhead"></span></div></div>
+          <div class="chart-row"><h3>Round-trip time <em>ms</em></h3><div class="chart-box"><canvas id="cRtt"></canvas><span class="playhead"></span></div></div>
+          <div class="chart-row"><h3>Throughput <em>Mbps</em></h3><div class="chart-box"><canvas id="cThr"></canvas><span class="playhead"></span></div></div>
+          <div class="legend" id="replayLegend"></div>
         </div>
       </section>
 
       <!-- LIBRARY -->
-      <section class="view" id="view-library" hidden>
-        <header class="page-head">
-          <div>
-            <h1>Library</h1>
-            <p class="sub">Saved experiments. Open one to see its results or replay it.</p>
-          </div>
-          <div class="actions"><button class="btn primary" type="button" data-goto="run"><i data-lucide="plus"></i><span>New run</span></button></div>
-        </header>
-        <div class="card flush" id="libList"></div>
+      <section class="view view-library" id="view-library" hidden>
+        <div class="card flush fill" id="libList"></div>
       </section>
-    </div>
+    </main>
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

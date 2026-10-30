@@ -202,7 +202,7 @@ class Lane {
     const w = this.w, h = this.h, ctx = this.ctx, c = this.colors;
     if (!w) return;
     const cy = h / 2;
-    const k = 1 - Math.exp(-dt * 8);  // smoothing toward targets
+    const k = dt === 0 ? 1 : 1 - Math.exp(-dt * 8);  // smoothing toward targets; snap when frozen
     this.shown.capacity += (this.state.capacity - this.shown.capacity) * k;
     this.shown.queue += (this.state.queue - this.shown.queue) * k;
 
@@ -296,7 +296,7 @@ function frame(now) {
   lastFrame = now;
   if (!document.hidden) {
     replay.advance(dt);
-    for (const l of Lane.all) if (l.el.offsetParent) l.tick(dt);
+    for (const l of Lane.all) if (l.el.offsetParent) l.tick(l.frozen ? 0 : dt);
   }
   requestAnimationFrame(frame);
 }
@@ -313,12 +313,17 @@ function showView(name) {
     if (!on) v.hidden = true;
   }
   for (const b of $$(".side-nav .nav-btn")) b.classList.toggle("active", b.dataset.view === name);
+  for (const h of $$(".topbar .hdr")) {
+    const on = h.dataset.for === name;
+    if (on && h.hidden) { h.hidden = false; h.style.animation = "none"; void h.offsetWidth; h.style.animation = ""; }
+    if (!on) h.hidden = true;
+  }
   app.view = name;
   if (name !== "replay") replay.pause();
   if (name === "library") renderLibrary();
   if (name === "replay") replay.ensure();
   for (const l of Lane.all) l.resize();
-  window.scrollTo({ top: 0 });
+  $(".main").scrollTo({ top: 0 });
 }
 
 function enableExperimentViews(on) {
@@ -356,7 +361,7 @@ async function refreshSaved() {
 async function renderLatest() {
   const card = $("#latestCard");
   const it = app.saved[0];
-  if (!it) { card.hidden = true; return; }
+  if (!it || app.running) { card.hidden = true; return; }
   let sm;
   try { sm = await api(`/api/experiments/${it.id}`); } catch { card.hidden = true; return; }
   card.hidden = false;
@@ -381,13 +386,19 @@ function renderRecent() {
     icons();
     return;
   }
-  root.innerHTML = `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th class="hide-sm">Algorithms</th><th class="r">Runs</th><th class="r hide-sm">Length</th><th class="r hide-sm">Date</th></tr></thead><tbody>${
-    items.map((it) => `<tr class="click" data-id="${it.id}"><td class="name-cell"></td><td class="hide-sm">${algoDots(it.algorithms)}</td><td class="r">${it.runs}</td><td class="r hide-sm">${it.duration} s</td><td class="r muted hide-sm">${fmtDate(it.created)}</td></tr>`).join("")
-  }</tbody></table></div>`;
-  $$("tr[data-id]", root).forEach((tr, i) => {
-    tr.querySelector(".name-cell").textContent = items[i].name;
-    tr.onclick = () => openExperiment(tr.dataset.id, "results");
+  root.innerHTML = `<div class="recent-list">${items.map((it) => `
+    <button class="recent-item" data-id="${it.id}">
+      <span class="nm"></span>
+      ${algoDots(it.algorithms)}
+      <i data-lucide="chevron-right"></i>
+      <span class="mt">${fmtDate(it.created)} · ${it.runs} run${it.runs > 1 ? "s" : ""} × ${it.duration} s</span>
+    </button>`).join("")}</div>`;
+  $$(".recent-item", root).forEach((el, i) => {
+    el.querySelector(".nm").textContent = items[i].name;
+    el.title = `${items[i].name}: ${items[i].algorithms.map((a) => ALGOS[a].short).join(", ")}`;
+    el.onclick = () => openExperiment(el.dataset.id, "results");
   });
+  icons();
 }
 
 /* ================================================================
@@ -445,9 +456,13 @@ function onFormChange() {
   $("#trainingHint").hidden = !(outside && cfg.algorithms.includes("rl"));
   $("#modelField").hidden = !cfg.algorithms.includes("rl");
   const n = (cfg.runs || 0) * cfg.algorithms.length;
-  const per = 0.07 * (cfg.duration || 0) + (cfg.algorithms.includes("rl") ? 3 : 0);
-  const est = Math.max(3, Math.round(per * Math.ceil(n / Math.max(1, (navigator.hardwareConcurrency || 4) / 2)) * 1.3));
-  if (!app.running) $("#runEstimate").textContent = n ? `${n} simulations · about ${est < 60 ? `${est} s` : `${Math.round(est / 60)} min`}` : "Pick at least one algorithm";
+  // Measured on this setup: baselines run ~60x faster than real time; the PPO agent is slower (~50 steps/ms batch)
+  const slots = Math.max(1, Math.floor((navigator.hardwareConcurrency || 4) / 2));
+  const dur = cfg.duration || 0;
+  const perSim = 0.015 * dur + 0.5 + (cfg.algorithms.includes("rl") ? (dur * 10) / 500 + 2 : 0) / Math.max(1, cfg.algorithms.length);
+  const est = Math.max(3, Math.round(Math.ceil(n / slots) * perSim));
+  $("#runCount").textContent = n ? `${n} simulation${n > 1 ? "s" : ""} (${cfg.runs} run${cfg.runs > 1 ? "s" : ""} × ${cfg.algorithms.length} algorithm${cfg.algorithms.length > 1 ? "s" : ""})` : "Pick at least one algorithm";
+  $("#runEstimate").textContent = n ? `About ${est < 60 ? `${est} s` : `${Math.round(est / 60)} min`} to run` : "–";
   $("#runBtn").disabled = !cfg.algorithms.length || app.running;
 }
 
@@ -467,7 +482,9 @@ form.addEventListener("submit", async (e) => {
 function setRunning(on) {
   app.running = on;
   $("#progressBlock").hidden = !on;
+  $("#progressBlock").classList.toggle("fill", on);
   $("#recentBlock").hidden = on;
+  if (on) $("#latestCard").hidden = true; else renderLatest();
   for (const el of form.elements) el.disabled = on;
   const btn = $("#runBtn");
   btn.disabled = on;
@@ -480,7 +497,6 @@ function setRunning(on) {
 function follow(snap) {
   showView("run");
   setRunning(true);
-  $("#runEstimate").textContent = "";
   const jobs = $("#runChips");
   jobs.innerHTML = "";
   snap.runs.forEach((r, i) => {
@@ -525,10 +541,11 @@ function follow(snap) {
     const frac = total / s.runs.length;
     $("#progressFill").style.width = `${(frac * 100).toFixed(1)}%`;
     const done = s.runs.filter((r) => r.status === "done").length;
-    $("#progressLabel").textContent = `Running ${s.runs.length} simulations · ${done} finished`;
+    $("#progressLabel").textContent = `Running ${s.runs.length} simulations`;
+    $("#progressDone").textContent = `${done} of ${s.runs.length} finished`;
     setSimStatus("busy", `Running ${done}/${s.runs.length}`);
     const eta = frac > 0.04 ? s.elapsed * (1 - frac) / frac : null;
-    $("#progressEta").textContent = eta == null ? "Estimating time" : eta < 1.5 ? "Almost done" : `About ${Math.ceil(eta)} s left`;
+    $("#progressEta").textContent = eta == null ? "Estimating time left" : eta < 1.5 ? "Almost done" : `About ${Math.ceil(eta)} s left`;
   }
 }
 
@@ -811,7 +828,7 @@ const replay = {
       $("#seedSelect").innerHTML = seeds.map((sd, i) => `<option value="${sd}">Run ${i + 1} (seed ${sd})</option>`).join("");
       const primaryIsRl = algos.includes("rl");
       $("#baselineSelect").innerHTML = (primaryIsRl ? others : algos.slice(1)).map((a) => `<option value="${a}">${ALGOS[a].name}</option>`).join("");
-      $("#baselineSelect").closest(".field").hidden = algos.length < 2;
+      $("#baselineSelect").closest(".hdr-field").hidden = algos.length < 2;
       $("#baselineSelect").previousElementSibling.textContent = primaryIsRl ? "Compare PPO with" : `Compare ${ALGOS[algos[0]].short} with`;
       if (!primaryIsRl) this.baseline = algos[1] || null;
       await this.load();
@@ -824,6 +841,13 @@ const replay = {
     const key = `${app.expId}:${this.seed}`;
     if (!app.traces[key]) app.traces[key] = await api(`/api/experiments/${app.expId}/traces/${this.seed}`);
     this.data = app.traces[key];
+    // Prefix sums so "average so far" is O(1) per frame
+    for (const d of Object.values(this.data)) {
+      if (d.cum) continue;
+      d.cum = { thr: [], rtt: [] };
+      let a = 0, b = 0;
+      d.throughput.forEach((v, k) => { a += v; b += d.rtt[k]; d.cum.thr.push(a); d.cum.rtt.push(b); });
+    }
     this.buildLanes();
     this.buildCharts();
     const n = this.data[this.primary()].t.length;
@@ -845,6 +869,7 @@ const replay = {
     this.lanes = this.shown().map((a) => new Lane($("#replayLanes"), {
       algo: a, title: ALGOS[a].name, queueSize: c.queueSize, maxRate: c.maxRate, delay: c.bottleneckDelay,
     }));
+    this.freezeLanes();
   },
 
   buildCharts() {
@@ -909,6 +934,7 @@ const replay = {
     sc.style.setProperty("--pct", `${(i / Math.max(1, sc.max)) * 100}%`);
     $("#timeNow").textContent = `${fmt(p.t[i], 1)} s`;
     this.renderSnapshot(i);
+    this.renderSofar(i);
     for (const [id, ch] of Object.entries(this.charts || {})) {
       const head = $(`#${id}`).parentElement.querySelector(".playhead");
       const x = ch.scales.x.getPixelForValue(p.t[i]);
@@ -921,7 +947,15 @@ const replay = {
   renderSnapshot(i) {
     const algos = this.shown();
     const t = this.data[this.primary()].t[i];
-    $("#snapTime").textContent = `t = ${fmt(t, 1)} s · capacity ${fmt(this.data[this.primary()].capacity[i], 1)} Mbps · ideal window ${fmt(this.data[this.primary()].bdp[i], 1)} packets`;
+    const pd = this.data[this.primary()];
+    const box = $("#snapInfo");
+    if (!box.children.length) {
+      box.innerHTML = `<span class="info"><i data-lucide="clock"></i><span data-k="t"></span></span><span class="info"><i data-lucide="gauge"></i><span data-k="cap"></span></span><span class="info"><i data-lucide="target"></i><span data-k="bdp"></span></span>`;
+      icons();
+    }
+    box.querySelector("[data-k=t]").textContent = `${fmt(t, 1)} s`;
+    box.querySelector("[data-k=cap]").textContent = `Capacity ${fmt(pd.capacity[i], 1)} Mbps`;
+    box.querySelector("[data-k=bdp]").textContent = `Ideal window ${fmt(pd.bdp[i], 1)} packets`;
     const tbl = $("#snapTable");
     if (tbl.dataset.algos !== algos.join()) {
       tbl.dataset.algos = algos.join();
@@ -941,6 +975,27 @@ const replay = {
     }
   },
 
+  renderSofar(i) {
+    const algos = this.shown();
+    const tbl = $("#sofarTable");
+    if (tbl.dataset.algos !== algos.join()) {
+      tbl.dataset.algos = algos.join();
+      tbl.innerHTML = `<thead><tr><th>Algorithm</th><th class="r">Avg throughput (Mbps)</th><th class="r">Avg delay (ms)</th><th class="r">Utilisation (%)</th><th class="r">Drops</th></tr></thead><tbody>${
+        algos.map((a) => `<tr data-a="${a}"><td><span class="name-cell" style="--c: var(--algo-${a})"><span class="dot"></span>${ALGOS[a].name}</span></td><td class="r"></td><td class="r"></td><td class="r"></td><td class="r"></td></tr>`).join("")}</tbody>`;
+    }
+    for (const tr of $$("tbody tr", tbl)) {
+      const d = this.data[tr.dataset.a], j = Math.min(i, d.t.length - 1), n = j + 1;
+      let cap = 0; for (let k = 0; k <= j; k += 5) cap += d.capacity[k];
+      cap /= Math.floor(j / 5) + 1;
+      const thr = d.cum.thr[j] / n;
+      const cells = tr.querySelectorAll("td.r");
+      cells[0].textContent = fmt(thr, 2);
+      cells[1].textContent = fmt(d.cum.rtt[j] / n, 1);
+      cells[2].textContent = fmt(cap ? (100 * thr) / cap : 0, 1);
+      cells[3].textContent = fmt(d.drops[j], 0);
+    }
+  },
+
   advance(dt) {
     if (!this.playing || !this.data) return;
     const n = this.data[this.primary()].t.length;
@@ -957,8 +1012,10 @@ const replay = {
     this.playing = true; this.syncBtn();
   },
   pause() { this.playing = false; this.syncBtn(); },
+  freezeLanes() { for (const l of this.lanes) l.frozen = !this.playing; },
   toggle() { this.playing ? this.pause() : this.play(); },
   syncBtn() {
+    this.freezeLanes();
     const b = $("#playBtn");
     b.innerHTML = `<i data-lucide="${this.playing ? "pause" : "play"}"></i>`;
     b.setAttribute("aria-label", this.playing ? "Pause" : "Play");
