@@ -304,7 +304,7 @@ function frame(now) {
 /* ================================================================
    App state & navigation
    ================================================================ */
-const app = { defaults: null, expId: null, summary: null, metric: "throughput", traces: {}, charts: {}, scatter: null };
+const app = { defaults: null, expId: null, summary: null, metric: "throughput", traces: {}, charts: {}, scatter: null, saved: [] };
 
 function showView(name) {
   for (const v of $$(".view")) {
@@ -312,27 +312,14 @@ function showView(name) {
     if (on && v.hidden) { v.hidden = false; v.style.animation = "none"; void v.offsetWidth; v.style.animation = ""; }
     if (!on) v.hidden = true;
   }
-  moveIndicator(name);
+  for (const b of $$(".side-nav .nav-btn")) b.classList.toggle("active", b.dataset.view === name);
   app.view = name;
   if (name !== "replay") replay.pause();
   if (name === "library") renderLibrary();
   if (name === "replay") replay.ensure();
   for (const l of Lane.all) l.resize();
+  window.scrollTo({ top: 0 });
 }
-
-function moveIndicator(name = app.view) {
-  const ind = $(".nav-indicator");
-  for (const b of $$(".nav .nav-btn")) {
-    const on = b.dataset.view === name;
-    b.classList.toggle("active", on);
-    if (on) {
-      ind.style.opacity = getComputedStyle(b).display === "none" ? 0 : 1;
-      ind.style.width = `${b.offsetWidth - 16}px`;
-      ind.style.transform = `translateX(${b.offsetLeft + 8}px)`;
-    }
-  }
-}
-window.addEventListener("resize", () => moveIndicator());
 
 function enableExperimentViews(on) {
   for (const v of ["results", "replay"]) $(`.nav-btn[data-view=${v}]`).disabled = !on;
@@ -340,16 +327,73 @@ function enableExperimentViews(on) {
 
 function setSimStatus(kind, text) {
   const el = $("#simStatus");
-  el.className = `sim-status mono ${kind}`;
+  el.className = `sim-status ${kind}`;
   el.querySelector("span").textContent = text;
+}
+
+const fmtDate = (ts) => new Date(ts * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+const algoDots = (algos) => `<span class="algo-dots">${ORDER.filter((a) => algos.includes(a)).map((a) => `<span style="--c: var(--algo-${a})"><i class="dot"></i>${ALGOS[a].short}</span>`).join("")}</span>`;
+
+/* Saved experiments feed the sidebar, the Run page's recent list and the library */
+async function refreshSaved() {
+  try { app.saved = await api("/api/experiments"); } catch { app.saved = []; }
+  $("#libCount").textContent = app.saved.length || "";
+  const side = $("#sideRecent");
+  side.innerHTML = "";
+  for (const it of app.saved.slice(0, 8)) {
+    const b = document.createElement("button");
+    b.textContent = it.name;
+    b.title = it.name;
+    b.classList.toggle("current", it.id === app.expId);
+    b.onclick = () => openExperiment(it.id, "results");
+    side.appendChild(b);
+  }
+  renderRecent();
+  renderLatest();
+}
+
+/* Compact comparison of the most recent saved experiment */
+async function renderLatest() {
+  const card = $("#latestCard");
+  const it = app.saved[0];
+  if (!it) { card.hidden = true; return; }
+  let sm;
+  try { sm = await api(`/api/experiments/${it.id}`); } catch { card.hidden = true; return; }
+  card.hidden = false;
+  $("#latestName").textContent = it.name;
+  $("#latestOpen").onclick = () => openExperiment(it.id, "results");
+  const algos = algosOf(sm);
+  const best = (key, hi) => algos.reduce((b, a) => ((hi ? sm.algorithms[a][key].mean > sm.algorithms[b][key].mean : sm.algorithms[a][key].mean < sm.algorithms[b][key].mean) ? a : b), algos[0]);
+  const top = { throughput: best("throughput", true), rtt: best("rtt", false), drops: best("drops", false) };
+  $("#latestTable").innerHTML = `<div class="table-wrap"><table class="table"><thead><tr><th>Algorithm</th><th class="r">Mbps</th><th class="r">Delay (ms)</th><th class="r">Drops</th></tr></thead><tbody>${
+    algos.map((a) => {
+      const m = sm.algorithms[a];
+      const td = (k, d) => `<td class="r ${top[k] === a ? "top" : ""}">${fmt(m[k].mean, d)}</td>`;
+      return `<tr><td><span class="name-cell" style="--c: var(--algo-${a})"><span class="dot"></span>${ALGOS[a].short}</span></td>${td("throughput", 2)}${td("rtt", 1)}${td("drops", 0)}</tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+
+function renderRecent() {
+  const root = $("#recentList");
+  const items = app.saved.slice(0, 5);
+  if (!items.length) {
+    root.innerHTML = `<div class="empty"><i data-lucide="inbox"></i><span>No saved experiments yet. Finished runs can be saved from their results page.</span></div>`;
+    icons();
+    return;
+  }
+  root.innerHTML = `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th class="hide-sm">Algorithms</th><th class="r">Runs</th><th class="r hide-sm">Length</th><th class="r hide-sm">Date</th></tr></thead><tbody>${
+    items.map((it) => `<tr class="click" data-id="${it.id}"><td class="name-cell"></td><td class="hide-sm">${algoDots(it.algorithms)}</td><td class="r">${it.runs}</td><td class="r hide-sm">${it.duration} s</td><td class="r muted hide-sm">${fmtDate(it.created)}</td></tr>`).join("")
+  }</tbody></table></div>`;
+  $$("tr[data-id]", root).forEach((tr, i) => {
+    tr.querySelector(".name-cell").textContent = items[i].name;
+    tr.onclick = () => openExperiment(tr.dataset.id, "results");
+  });
 }
 
 /* ================================================================
    Run view
    ================================================================ */
 const form = $("#runForm");
-let previewLane = null;
-let previewTimer = null;
 
 function buildForm() {
   const d = app.defaults;
@@ -370,7 +414,7 @@ function buildForm() {
     input.value = p.default; input.min = p.min; input.max = p.max;
   }
   const sel = $("#modelSelect");
-  sel.innerHTML = d.models.map((m) => `<option value="${m}">${m.replace("checkpoints_ppo_tcp/", "checkpoint: ").replace(".zip", "")}</option>`).join("")
+  sel.innerHTML = d.models.map((m) => `<option value="${m}">${m.replace("checkpoints_ppo_tcp/", "Checkpoint ").replace("ppo_tcp_100k_", "").replace("_steps", " steps").replace(".zip", "").replace("ppo_tcp_normalized", "Final model")}</option>`).join("")
     || `<option value="">No trained model found</option>`;
   for (const b of $$(".stepper button")) {
     b.addEventListener("click", () => {
@@ -392,8 +436,7 @@ function readForm() {
 
 function onFormChange() {
   const cfg = readForm();
-  const p = app.defaults.params;
-  for (const [k, lim] of Object.entries(p)) {
+  for (const [k, lim] of Object.entries(app.defaults.params)) {
     const v = cfg[k];
     form.elements[k]?.classList.toggle("invalid", isNaN(v) || v < lim.min || v > lim.max);
   }
@@ -404,31 +447,8 @@ function onFormChange() {
   const n = (cfg.runs || 0) * cfg.algorithms.length;
   const per = 0.07 * (cfg.duration || 0) + (cfg.algorithms.includes("rl") ? 3 : 0);
   const est = Math.max(3, Math.round(per * Math.ceil(n / Math.max(1, (navigator.hardwareConcurrency || 4) / 2)) * 1.3));
-  $("#runEstimate").textContent = n ? `${n} simulations, about ${est < 60 ? `${est} s` : `${Math.round(est / 60)} min`}.` : "";
-  $("#runBtn").disabled = !cfg.algorithms.length;
-  updatePreview(cfg);
-}
-
-function updatePreview(cfg) {
-  const q = Math.max(10, cfg.queueSize || 60), maxR = Math.max(1, cfg.maxRate || 11.5);
-  if (!previewLane || previewLane.queueSize !== q || previewLane.maxRate !== maxR || previewLane.delay !== cfg.bottleneckDelay) {
-    previewLane?.destroy();
-    previewLane = new Lane($("#previewLanes"), { algo: "rl", title: "Example traffic", queueSize: q, maxRate: maxR, delay: cfg.bottleneckDelay || 20, stats: false });
-  }
-  previewLane.cfg = cfg;
-}
-
-function previewWander() {
-  // Gentle stand-in traffic so the diagram is alive before any data exists
-  clearTimeout(previewTimer);
-  if (previewLane) {
-    const c = previewLane.cfg || {};
-    const lo = c.minRate || 3.5, hi = c.maxRate || 11.5;
-    const cap = lo + Math.random() * (hi - lo);
-    previewLane.set({ capacity: cap, throughput: cap * (0.75 + Math.random() * 0.2), queue: Math.random() * (previewLane.queueSize * 0.25), drops: 0, rtt: 0 });
-  }
-  const holdLo = (previewLane?.cfg?.minHold || 3.5), holdHi = (previewLane?.cfg?.maxHold || 9);
-  previewTimer = setTimeout(previewWander, 1000 * Math.min(4, holdLo + Math.random() * (holdHi - holdLo)) / 1.5);
+  if (!app.running) $("#runEstimate").textContent = n ? `${n} simulations · about ${est < 60 ? `${est} s` : `${Math.round(est / 60)} min`}` : "Pick at least one algorithm";
+  $("#runBtn").disabled = !cfg.algorithms.length || app.running;
 }
 
 form.addEventListener("submit", async (e) => {
@@ -445,32 +465,32 @@ form.addEventListener("submit", async (e) => {
 });
 
 function setRunning(on) {
+  app.running = on;
   $("#progressBlock").hidden = !on;
+  $("#recentBlock").hidden = on;
   for (const el of form.elements) el.disabled = on;
-  $("#runBtn").innerHTML = on ? `<i data-lucide="loader-circle" class="spin"></i><span>Running…</span>` : `<i data-lucide="play"></i><span>Run experiment</span>`;
-  $("#previewTitle").textContent = on ? "Simulating" : "The test network";
-  $("#previewWinTitle").textContent = on ? "bottleneck · running" : "bottleneck · preview";
-  $("#diagramKey").hidden = on;
-  if (!on) setSimStatus("ready", "ns-3 ready");
-  $("#previewSub").textContent = on
-    ? "Each algorithm is being run on the same sequence of capacity changes. You can leave this page; the run continues."
-    : "One TCP flow crosses a bottleneck whose speed jumps at random. Every algorithm sees the exact same jumps.";
+  const btn = $("#runBtn");
+  btn.disabled = on;
+  btn.innerHTML = on ? `<i data-lucide="loader-circle"></i><span>Running</span>` : `<i data-lucide="play"></i><span>Run experiment</span>`;
   icons();
-  if (on) $(".spin", $("#runBtn"))?.classList.add("spin");
+  if (on) btn.querySelector("svg")?.classList.add("spin");
+  if (!on) { setSimStatus("ready", "Simulator ready"); onFormChange(); }
 }
 
 function follow(snap) {
   showView("run");
   setRunning(true);
-  const chips = $("#runChips");
-  chips.innerHTML = "";
-  for (const r of snap.runs) {
-    const li = document.createElement("li");
-    li.className = "chip";
-    li.style.setProperty("--c", `var(--algo-${r.algo})`);
-    li.innerHTML = `<span class="dot"></span><span>${ALGOS[r.algo].short} · run ${r.seed - snap.config.seed + 1}</span><span class="st"></span>`;
-    chips.appendChild(li);
-  }
+  $("#runEstimate").textContent = "";
+  const jobs = $("#runChips");
+  jobs.innerHTML = "";
+  snap.runs.forEach((r, i) => {
+    const el = document.createElement("div");
+    el.className = "job";
+    el.style.setProperty("--c", `var(--algo-${r.algo})`);
+    el.style.animationDelay = `${Math.min(i, 20) * 15}ms`;
+    el.innerHTML = `<span class="dot"></span><span class="lbl">${ALGOS[r.algo].name} · run ${r.seed - snap.config.seed + 1}</span><span class="st"></span><span class="track"><i></i></span>`;
+    jobs.appendChild(el);
+  });
   render(snap);
   const es = new EventSource(`/api/experiments/${snap.id}/events`);
   $("#cancelBtn").onclick = () => api(`/api/experiments/${snap.id}/cancel`, { method: "POST" }).catch(() => {});
@@ -482,33 +502,33 @@ function follow(snap) {
   es.onerror = () => { es.close(); setTimeout(() => api("/api/defaults").then((d) => { if (!d.active) finish({ ...snap, status: "unknown" }); }), 800); };
 
   function render(s) {
-    const chipsEls = $$("#runChips .chip");
+    const els = $$("#runChips .job");
     let total = 0;
     s.runs.forEach((r, i) => {
-      const li = chipsEls[i];
+      const el = els[i];
       total += r.progress;
-      li.style.setProperty("--p", r.progress);
-      li.classList.toggle("done", r.status === "done");
-      li.classList.toggle("failed", r.status === "failed");
-      const st = r.status === "done" ? "check" : r.status === "failed" ? "x" : r.status === "running" ? "loader-circle" : "";
-      const holder = li.querySelector(".st");
-      if (holder.dataset.st !== st) {
-        holder.dataset.st = st;
-        holder.innerHTML = st ? `<i data-lucide="${st}"></i>` : "";
-        if (r.status === "failed") li.title = r.error || "Failed";
+      el.style.setProperty("--p", r.progress);
+      el.classList.toggle("done", r.status === "done");
+      el.classList.toggle("failed", r.status === "failed");
+      const st = r.status;
+      const holder = el.querySelector(".st");
+      if (st === "running") {
+        if (holder.dataset.st !== st) { holder.innerHTML = `<i data-lucide="loader-circle"></i><b></b>`; icons(); holder.querySelector("svg")?.classList.add("spin"); }
+        holder.querySelector("b").textContent = `${Math.round(r.progress * 100)}%`;
+      } else if (holder.dataset.st !== st) {
+        holder.innerHTML = st === "done" ? `<i data-lucide="check"></i>Done` : st === "failed" ? `<i data-lucide="x"></i>Failed` : st === "cancelled" ? "Cancelled" : "Queued";
+        if (st === "failed") el.title = r.error || "Failed";
         icons();
-        if (st === "loader-circle") holder.querySelector("svg")?.classList.add("spin");
       }
+      holder.dataset.st = st;
     });
     const frac = total / s.runs.length;
     $("#progressFill").style.width = `${(frac * 100).toFixed(1)}%`;
     const done = s.runs.filter((r) => r.status === "done").length;
-    $("#progressLabel").textContent = `${done} of ${s.runs.length} simulations finished`;
-    setSimStatus("busy", `running ${done}/${s.runs.length}`);
+    $("#progressLabel").textContent = `Running ${s.runs.length} simulations · ${done} finished`;
+    setSimStatus("busy", `Running ${done}/${s.runs.length}`);
     const eta = frac > 0.04 ? s.elapsed * (1 - frac) / frac : null;
-    $("#progressEta").textContent = eta == null ? "" : eta < 1.5 ? "almost done" : `about ${Math.ceil(eta)} s left`;
-    // Pulse the preview with real progress
-    if (previewLane) previewLane.set({ ...previewLane.state, throughput: Math.max(2, previewLane.state.throughput) });
+    $("#progressEta").textContent = eta == null ? "Estimating time" : eta < 1.5 ? "Almost done" : `About ${Math.ceil(eta)} s left`;
   }
 }
 
@@ -546,14 +566,55 @@ function renderResults() {
   const s = app.summary;
   $("#expName").value = s.name;
   const c = s.config;
-  const date = new Date(s.created * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-  $("#expMeta").textContent = `${c.runs} run${c.runs > 1 ? "s" : ""} of ${c.duration} s, capacity ${c.minRate}–${c.maxRate} Mbps, ${c.queueSize}-packet queue, ${c.bottleneckDelay} ms link. ${date}.`;
+  $("#expMeta").textContent = `${c.runs} run${c.runs > 1 ? "s" : ""} × ${c.duration} s · ${c.minRate}–${c.maxRate} Mbps · ${c.queueSize}-packet queue · ${c.bottleneckDelay} ms link · ${fmtDate(s.created)}`;
   syncSaveBtn();
+  renderKpis();
+  for (const b of $$("#sideRecent button")) b.classList.toggle("current", app.saved[[...b.parentNode.children].indexOf(b)]?.id === app.expId);
 
   segmented($("#metricSeg"), METRICS.map((m) => ({ key: m.key, label: m.label })), app.metric, (k) => { app.metric = k; renderBars(); });
   renderBars();
   renderScatter();
   renderTable();
+}
+
+const KPI_SPEC = [
+  { key: "throughput", label: "Throughput", icon: "gauge" },
+  { key: "rtt", label: "Average delay", icon: "timer" },
+  { key: "rtt_p95", label: "Delay p95", icon: "activity" },
+  { key: "drops", label: "Packet drops", icon: "package-x" },
+];
+
+/* Headline numbers: the PPO agent against the best baseline for each metric */
+function renderKpis() {
+  const s = app.summary, algos = algosOf(s);
+  const hero = algos.includes("rl") ? "rl" : null;
+  const root = $("#kpis");
+  root.innerHTML = "";
+  for (const k of KPI_SPEC) {
+    const m = METRICS.find((x) => x.key === k.key);
+    const others = algos.filter((a) => a !== hero);
+    const pickBest = (list) => list.reduce((b, a) => ((m.better === "high" ? s.algorithms[a][k.key].mean > s.algorithms[b][k.key].mean : s.algorithms[a][k.key].mean < s.algorithms[b][k.key].mean) ? a : b), list[0]);
+    const subject = hero || pickBest(algos);
+    const value = s.algorithms[subject][k.key].mean;
+    let delta = "";
+    if (hero && others.length) {
+      const rival = pickBest(others), rv = s.algorithms[rival][k.key].mean;
+      const diff = value - rv;
+      const better = m.better === "high" ? diff > 1e-9 : diff < -1e-9;
+      const same = Math.abs(diff) < (k.key === "drops" ? 0.5 : Math.max(1e-9, Math.abs(rv) * 0.005));
+      const txt = k.key === "drops" ? `${diff > 0 ? "+" : ""}${fmt(diff, 0)}` : rv ? `${diff > 0 ? "+" : ""}${fmt((diff / rv) * 100, 1)}%` : "–";
+      delta = `<span class="k-delta"><b class="${same ? "flat" : better ? "up" : "down"}">${same ? "same" : txt}</b>vs ${ALGOS[rival].short}, best baseline</span>`;
+    } else {
+      delta = `<span class="k-delta">${hero ? "No baseline in this run" : `Best: ${ALGOS[subject].name}`}</span>`;
+    }
+    const card = document.createElement("div");
+    card.className = "card kpi";
+    card.innerHTML = `<div class="k-label"><i data-lucide="${k.icon}"></i>${hero ? "PPO " + k.label.toLowerCase() : k.label}</div>
+      <div class="k-value"><span class="v">0</span><small>${m.unit}</small></div>${delta}`;
+    root.appendChild(card);
+    countUp(card.querySelector(".v"), value, m.digits);
+  }
+  icons();
 }
 
 function bestAlgo(metric) {
@@ -573,7 +634,8 @@ function renderBars() {
   const max = Math.max(...algos.map((a) => s.algorithms[a][m.key].mean + s.algorithms[a][m.key].std), 1e-9) * 1.08;
   const best = bestAlgo(m.key);
   const root = $("#metricBars");
-  if (root.children.length !== algos.length) {
+  if (root.dataset.algos !== algos.join()) {
+    root.dataset.algos = algos.join();
     root.innerHTML = algos.map((a) => `
       <div class="bar-row" style="--c: var(--algo-${a})" data-a="${a}">
         <span class="name"><span class="dot"></span>${ALGOS[a].short}</span>
@@ -598,7 +660,7 @@ function renderBars() {
 }
 
 function chartTheme() {
-  return { ink: cssVar("--ink"), ink2: cssVar("--ink-2"), ink3: cssVar("--ink-3"), grid: cssVar("--grid"), panel: cssVar("--card"), raised: cssVar("--raised"), edge: cssVar("--pipe-edge"), ref: cssVar("--ref") };
+  return { ink: cssVar("--ink"), ink2: cssVar("--ink-2"), ink3: cssVar("--ink-3"), grid: cssVar("--grid"), panel: cssVar("--panel"), raised: cssVar("--panel"), edge: cssVar("--border-2"), ref: cssVar("--ref") };
 }
 
 function baseChartOpts(t) {
@@ -610,7 +672,7 @@ function baseChartOpts(t) {
       tooltip: {
         backgroundColor: t.raised, titleColor: t.ink, bodyColor: t.ink2, borderColor: t.edge, borderWidth: 1,
         padding: 10, cornerRadius: 4, boxPadding: 4, usePointStyle: true,
-        titleFont: { weight: "500" }, bodyFont: { family: "ui-monospace, SFMono-Regular, Menlo, monospace", size: 12 },
+        titleFont: { weight: "500" }, bodyFont: { size: 12 }, caretPadding: 6,
       },
     },
     scales: {
@@ -698,12 +760,12 @@ function shapeIcon(a) {
 
 function renderTable() {
   const s = app.summary, algos = algosOf(s);
-  const head = `<thead><tr><th>Algorithm</th>${METRICS.map((m) => `<th>${m.label} <small>${m.unit}</small></th>`).join("")}</tr></thead>`;
+  const head = `<thead><tr><th>Algorithm</th>${METRICS.map((m) => `<th class="r">${m.label} (${m.unit})</th>`).join("")}</tr></thead>`;
   const best = Object.fromEntries(METRICS.map((m) => [m.key, bestAlgo(m.key)]));
-  const rows = algos.map((a) => `<tr><td><span class="name" style="--c: var(--algo-${a})"><span class="dot"></span>${ALGOS[a].name}</span></td>${
+  const rows = algos.map((a) => `<tr><td><span class="name-cell" style="--c: var(--algo-${a})"><span class="dot"></span>${ALGOS[a].name}</span></td>${
     METRICS.map((m) => {
       const { mean, std } = s.algorithms[a][m.key];
-      return `<td class="${best[m.key] === a ? "top" : ""}">${fmt(mean, m.digits)}${std > 0 ? ` <small>± ${fmt(std, m.digits)}</small>` : ""}</td>`;
+      return `<td class="r ${best[m.key] === a ? "top" : ""}">${fmt(mean, m.digits)}${std > 0 ? ` <small>± ${fmt(std, m.digits)}</small>` : ""}</td>`;
     }).join("")}</tr>`).join("");
   $("#summaryTable").innerHTML = head + `<tbody>${rows}</tbody>`;
 }
@@ -722,6 +784,7 @@ $("#saveBtn").addEventListener("click", async () => {
   try {
     app.summary = await api(`/api/experiments/${app.expId}/save`, { method: "POST", body: { name: $("#expName").value } });
     syncSaveBtn();
+    refreshSaved();
     toast("Saved to library", "bookmark-check");
   } catch (ex) { toast(ex.message, "triangle-alert"); }
 });
@@ -770,8 +833,7 @@ const replay = {
     this.idx = Math.min(this.idx, n - 1);
     const c = app.summary.config;
     $("#replayTitle").textContent = app.summary.name;
-    $("#replaySub").textContent = "Both flows cross the same bottleneck and see the same capacity changes.";
-    $("#replayWinTitle").textContent = `seed ${this.seed} · ${c.minRate}–${c.maxRate} Mbps · ${c.queueSize}-packet queue · ${c.bottleneckDelay} ms`;
+    $("#replaySub").textContent = `Seed ${this.seed} · same capacity changes for both flows · ${c.minRate}–${c.maxRate} Mbps · ${c.queueSize}-packet queue · ${c.bottleneckDelay} ms link`;
     this.render(true);
   },
 
@@ -846,12 +908,36 @@ const replay = {
     sc.value = i;
     sc.style.setProperty("--pct", `${(i / Math.max(1, sc.max)) * 100}%`);
     $("#timeNow").textContent = `${fmt(p.t[i], 1)} s`;
+    this.renderSnapshot(i);
     for (const [id, ch] of Object.entries(this.charts || {})) {
       const head = $(`#${id}`).parentElement.querySelector(".playhead");
       const x = ch.scales.x.getPixelForValue(p.t[i]);
       head.style.transform = `translateX(${x}px)`;
       head.style.top = `${ch.chartArea.top}px`;
       head.style.height = `${ch.chartArea.bottom - ch.chartArea.top}px`;
+    }
+  },
+
+  renderSnapshot(i) {
+    const algos = this.shown();
+    const t = this.data[this.primary()].t[i];
+    $("#snapTime").textContent = `t = ${fmt(t, 1)} s · capacity ${fmt(this.data[this.primary()].capacity[i], 1)} Mbps · ideal window ${fmt(this.data[this.primary()].bdp[i], 1)} packets`;
+    const tbl = $("#snapTable");
+    if (tbl.dataset.algos !== algos.join()) {
+      tbl.dataset.algos = algos.join();
+      tbl.innerHTML = `<thead><tr><th>Algorithm</th><th class="r">Throughput (Mbps)</th><th class="r">Delay (ms)</th><th class="r">Queue (pkts)</th><th class="r">Window (pkts)</th><th class="r">Drops so far</th></tr></thead><tbody>${
+        algos.map((a) => `<tr data-a="${a}"><td><span class="name-cell" style="--c: var(--algo-${a})"><span class="dot"></span>${ALGOS[a].name}</span></td><td class="r"></td><td class="r"></td><td class="r"></td><td class="r"></td><td class="r"></td></tr>`).join("")}</tbody>`;
+    }
+    for (const tr of $$("tbody tr", tbl)) {
+      const d = this.data[tr.dataset.a], j = Math.min(i, d.t.length - 1);
+      const from = Math.max(0, j - 4);
+      let thr = 0; for (let k = from; k <= j; k++) thr += d.throughput[k]; thr /= (j - from + 1);
+      const cells = tr.querySelectorAll("td.r");
+      cells[0].textContent = fmt(thr, 2);
+      cells[1].textContent = fmt(d.rtt[j], 1);
+      cells[2].textContent = fmt(d.queue[j], 0);
+      cells[3].textContent = fmt(d.cwnd[j], 1);
+      cells[4].textContent = fmt(d.drops[j], 0);
     }
   },
 
@@ -898,37 +984,35 @@ window.addEventListener("resize", () => replay.render(true));
    ================================================================ */
 async function renderLibrary() {
   const root = $("#libList");
-  let items;
-  try { items = await api("/api/experiments"); } catch (ex) { root.innerHTML = `<div class="empty">${ex.message}</div>`; return; }
+  await refreshSaved();
+  const items = app.saved;
   if (!items.length) {
-    root.innerHTML = `<div class="empty"><i data-lucide="library"></i><p class="prose">No saved experiments yet. Run one, then press Save experiment on its results.</p><button class="btn primary" id="libRun"><i data-lucide="flask-conical"></i><span>New experiment</span></button></div>`;
-    $("#libRun").onclick = () => showView("run");
+    root.innerHTML = `<div class="empty"><i data-lucide="inbox"></i><span>No saved experiments yet. Finished runs can be saved from their results page.</span></div>`;
     icons();
     return;
   }
-  root.innerHTML = "";
+  root.innerHTML = `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th class="hide-sm">Algorithms</th><th class="r">Runs</th><th class="r hide-sm">Length</th><th class="r hide-sm">Date</th><th class="r"><span class="sr-only">Actions</span></th></tr></thead><tbody></tbody></table></div>`;
+  const body = $("tbody", root);
   items.forEach((it, n) => {
-    const row = document.createElement("div");
-    row.className = "lib-row";
-    row.style.animationDelay = `${Math.min(n, 8) * 30}ms`;
-    const date = new Date(it.created * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-    row.innerHTML = `
-      <div>
-        <div class="t"></div>
-        <div class="meta"><span><i data-lucide="calendar"></i>${date}</span><span><i data-lucide="repeat"></i>${it.runs} run${it.runs > 1 ? "s" : ""}</span><span><i data-lucide="timer"></i>${it.duration} s each</span></div>
-      </div>
-      <div class="algo-dots">${ORDER.filter((a) => it.algorithms.includes(a)).map((a) => `<span style="--c: var(--algo-${a})"><i></i>${ALGOS[a].short}</span>`).join("")}</div>
-      <div class="lib-actions">
-        <button class="btn" data-act="open"><i data-lucide="chart-column"></i><span>Results</span></button>
-        <button class="btn" data-act="replay"><i data-lucide="circle-play"></i><span>Replay</span></button>
-        <button class="btn ghost" data-act="rename" aria-label="Rename"><i data-lucide="pencil"></i></button>
-        <button class="btn ghost danger" data-act="delete" aria-label="Delete"><i data-lucide="trash-2"></i></button>
-      </div>`;
-    row.querySelector(".t").textContent = it.name;
-    row.querySelector("[data-act=open]").onclick = () => openExperiment(it.id, "results");
-    row.querySelector("[data-act=replay]").onclick = () => openExperiment(it.id, "replay");
-    row.querySelector("[data-act=rename]").onclick = () => {
-      const t = row.querySelector(".t");
+    const tr = document.createElement("tr");
+    tr.style.animation = `viewIn 200ms ${Math.min(n, 10) * 25}ms both`;
+    tr.innerHTML = `
+      <td><span class="t name-cell"></span></td>
+      <td class="hide-sm">${algoDots(it.algorithms)}</td>
+      <td class="r">${it.runs}</td>
+      <td class="r hide-sm">${it.duration} s</td>
+      <td class="r muted hide-sm">${fmtDate(it.created)}</td>
+      <td class="r"><div class="row-actions">
+        <button class="btn small" data-act="open">Results</button>
+        <button class="btn small" data-act="replay">Replay</button>
+        <button class="btn ghost small" data-act="rename" aria-label="Rename" title="Rename"><i data-lucide="pencil"></i></button>
+        <button class="btn ghost small danger" data-act="delete" aria-label="Delete" title="Delete"><i data-lucide="trash-2"></i></button>
+      </div></td>`;
+    const t = tr.querySelector(".t");
+    t.textContent = it.name;
+    tr.querySelector("[data-act=open]").onclick = () => openExperiment(it.id, "results");
+    tr.querySelector("[data-act=replay]").onclick = () => openExperiment(it.id, "replay");
+    tr.querySelector("[data-act=rename]").onclick = () => {
       const input = document.createElement("input");
       input.className = "lib-rename"; input.value = it.name;
       t.replaceChildren(input); input.focus(); input.select();
@@ -938,6 +1022,7 @@ async function renderLibrary() {
           await api(`/api/experiments/${it.id}/save`, { method: "POST", body: { name } });
           it.name = name;
           if (app.expId === it.id && app.summary) { app.summary.name = name; $("#expName").value = name; syncSaveBtn(); }
+          refreshSaved();
           toast("Renamed");
         }
         t.textContent = it.name;
@@ -945,23 +1030,23 @@ async function renderLibrary() {
       input.addEventListener("blur", commit, { once: true });
       input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); if (e.key === "Escape") { input.value = it.name; input.blur(); } });
     };
-    const del = row.querySelector("[data-act=delete]");
+    const del = tr.querySelector("[data-act=delete]");
     del.onclick = async () => {
       if (!del.classList.contains("armed")) {
         del.classList.add("armed");
-        del.innerHTML = `<i data-lucide="trash-2"></i><span>Delete?</span>`;
+        del.innerHTML = `<i data-lucide="trash-2"></i><span>Delete</span>`;
         icons();
         setTimeout(() => { if (del.isConnected) { del.classList.remove("armed"); del.innerHTML = `<i data-lucide="trash-2"></i>`; icons(); } }, 3000);
         return;
       }
       await api(`/api/experiments/${it.id}`, { method: "DELETE" });
-      row.style.transition = "opacity 160ms, transform 160ms";
-      row.style.opacity = 0; row.style.transform = "translateX(12px)";
-      setTimeout(() => { row.remove(); if (!root.children.length) renderLibrary(); }, 170);
-      if (app.expId === it.id) { app.summary.saved = false; enableExperimentViews(false); app.expId = null; }
+      tr.style.transition = "opacity 160ms";
+      tr.style.opacity = 0;
+      if (app.expId === it.id) { app.summary.saved = false; syncSaveBtn(); }
+      setTimeout(() => renderLibrary(), 170);
       toast("Deleted", "trash-2");
     };
-    root.appendChild(row);
+    body.appendChild(tr);
   });
   icons();
 }
@@ -969,25 +1054,27 @@ async function renderLibrary() {
 /* ================================================================
    Boot
    ================================================================ */
-for (const b of $$(".nav .nav-btn")) b.addEventListener("click", () => !b.disabled && showView(b.dataset.view));
+for (const b of $$(".side-nav .nav-btn")) b.addEventListener("click", () => !b.disabled && showView(b.dataset.view));
+for (const b of $$("[data-goto]")) b.addEventListener("click", () => showView(b.dataset.goto));
 
 (async function boot() {
   Chart.defaults.font.family = "Inter, ui-sans-serif, system-ui, sans-serif";
-  Chart.defaults.font.size = 12;
+  Chart.defaults.font.size = 11;
+  Chart.defaults.color = cssVar("--ink-3");
   icons();
   try {
     app.defaults = await api("/api/defaults");
   } catch (ex) {
-    setSimStatus("", "server offline");
+    setSimStatus("", "Server offline");
     $("#formError").textContent = "Can't reach the dashboard server. Start it with dashboard/run_dashboard.sh.";
     $("#formError").hidden = false;
     return;
   }
   buildForm();
   showView("run");
-  previewWander();
+  refreshSaved();
   requestAnimationFrame(frame);
-  setSimStatus(app.defaults.simReady ? "ready" : "", app.defaults.simReady ? "ns-3 ready" : "ns-3 not built");
+  setSimStatus(app.defaults.simReady ? "ready" : "", app.defaults.simReady ? "Simulator ready" : "Simulator not built");
   if (!app.defaults.simReady) {
     $("#formError").textContent = "The ns-3 simulator isn't built yet. Run dashboard/build_sim.sh, then reload.";
     $("#formError").hidden = false;
