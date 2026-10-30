@@ -8,10 +8,10 @@ const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
 const ALGOS = {
-  rl:      { name: "PPO agent", short: "PPO",     note: "Our trained policy", shape: "circle" },
-  newreno: { name: "NewReno",   short: "NewReno", note: "Classic, loss-based", shape: "triangle" },
-  cubic:   { name: "CUBIC",     short: "CUBIC",   note: "Linux default", shape: "rect" },
-  bbr:     { name: "BBR",       short: "BBR",     note: "Google, model-based", shape: "rectRot" },
+  rl:      { name: "PPO agent", short: "PPO",     note: "trained policy", shape: "circle" },
+  newreno: { name: "NewReno",   short: "NewReno", note: "loss-based", shape: "triangle" },
+  cubic:   { name: "CUBIC",     short: "CUBIC",   note: "linux default", shape: "rect" },
+  bbr:     { name: "BBR",       short: "BBR",     note: "model-based", shape: "rectRot" },
 };
 const ORDER = ["rl", "newreno", "cubic", "bbr"];
 
@@ -163,7 +163,7 @@ class Lane {
   refreshColors() {
     this.colors = {
       algo: algoColor(this.algo || "rl"), pipe: cssVar("--pipe"), edge: cssVar("--pipe-edge"),
-      line: cssVar("--line-2"), crit: cssVar("--critical"), panel: cssVar("--panel"),
+      line: cssVar("--pipe-edge"), crit: cssVar("--critical"),
     };
   }
 
@@ -226,7 +226,7 @@ class Lane {
     ctx.fillStyle = c.pipe;
     ctx.strokeStyle = c.edge;
     ctx.lineWidth = 1;
-    roundRect(ctx, px0, cy - thick / 2, px1 - px0, thick, thick / 2);
+    roundRect(ctx, px0, cy - thick / 2, px1 - px0, thick, 4);
     ctx.fill(); ctx.stroke();
 
     // Queue buffer at the router's egress
@@ -239,11 +239,11 @@ class Lane {
     for (let i = 0; i < cells; i++) {
       const f = Math.max(0, Math.min(1, filled - i));
       ctx.fillStyle = c.pipe;
-      roundRect(ctx, qx0 + i * cw + 1, qy, cw - 2, 10, 2); ctx.fill();
+      roundRect(ctx, qx0 + i * cw + 1, qy, cw - 2, 10, 1); ctx.fill();
       if (f > 0) {
         ctx.globalAlpha = 0.35 + 0.65 * f;
         ctx.fillStyle = c.algo;
-        roundRect(ctx, qx0 + i * cw + 1, qy, cw - 2, 10, 2); ctx.fill();
+        roundRect(ctx, qx0 + i * cw + 1, qy, cw - 2, 10, 1); ctx.fill();
         ctx.globalAlpha = 1;
       }
     }
@@ -312,13 +312,7 @@ function showView(name) {
     if (on && v.hidden) { v.hidden = false; v.style.animation = "none"; void v.offsetWidth; v.style.animation = ""; }
     if (!on) v.hidden = true;
   }
-  const btns = $$(".rail-items .rail-btn");
-  const ind = $(".rail-indicator");
-  btns.forEach((b, i) => {
-    const on = b.dataset.view === name;
-    b.classList.toggle("active", on);
-    if (on) { ind.style.opacity = 1; ind.style.transform = `translateY(${b.offsetTop}px)`; }
-  });
+  moveIndicator(name);
   app.view = name;
   if (name !== "replay") replay.pause();
   if (name === "library") renderLibrary();
@@ -326,8 +320,28 @@ function showView(name) {
   for (const l of Lane.all) l.resize();
 }
 
+function moveIndicator(name = app.view) {
+  const ind = $(".nav-indicator");
+  for (const b of $$(".nav .nav-btn")) {
+    const on = b.dataset.view === name;
+    b.classList.toggle("active", on);
+    if (on) {
+      ind.style.opacity = getComputedStyle(b).display === "none" ? 0 : 1;
+      ind.style.width = `${b.offsetWidth - 16}px`;
+      ind.style.transform = `translateX(${b.offsetLeft + 8}px)`;
+    }
+  }
+}
+window.addEventListener("resize", () => moveIndicator());
+
 function enableExperimentViews(on) {
-  for (const v of ["results", "replay"]) $(`.rail-btn[data-view=${v}]`).disabled = !on;
+  for (const v of ["results", "replay"]) $(`.nav-btn[data-view=${v}]`).disabled = !on;
+}
+
+function setSimStatus(kind, text) {
+  const el = $("#simStatus");
+  el.className = `sim-status mono ${kind}`;
+  el.querySelector("span").textContent = text;
 }
 
 /* ================================================================
@@ -399,7 +413,7 @@ function updatePreview(cfg) {
   const q = Math.max(10, cfg.queueSize || 60), maxR = Math.max(1, cfg.maxRate || 11.5);
   if (!previewLane || previewLane.queueSize !== q || previewLane.maxRate !== maxR || previewLane.delay !== cfg.bottleneckDelay) {
     previewLane?.destroy();
-    previewLane = new Lane($("#previewLanes"), { algo: "rl", title: "Preview", queueSize: q, maxRate: maxR, delay: cfg.bottleneckDelay || 20, stats: false });
+    previewLane = new Lane($("#previewLanes"), { algo: "rl", title: "Example traffic", queueSize: q, maxRate: maxR, delay: cfg.bottleneckDelay || 20, stats: false });
   }
   previewLane.cfg = cfg;
 }
@@ -435,6 +449,9 @@ function setRunning(on) {
   for (const el of form.elements) el.disabled = on;
   $("#runBtn").innerHTML = on ? `<i data-lucide="loader-circle" class="spin"></i><span>Running…</span>` : `<i data-lucide="play"></i><span>Run experiment</span>`;
   $("#previewTitle").textContent = on ? "Simulating" : "The test network";
+  $("#previewWinTitle").textContent = on ? "bottleneck · running" : "bottleneck · preview";
+  $("#diagramKey").hidden = on;
+  if (!on) setSimStatus("ready", "ns-3 ready");
   $("#previewSub").textContent = on
     ? "Each algorithm is being run on the same sequence of capacity changes. You can leave this page; the run continues."
     : "One TCP flow crosses a bottleneck whose speed jumps at random. Every algorithm sees the exact same jumps.";
@@ -487,6 +504,7 @@ function follow(snap) {
     $("#progressFill").style.width = `${(frac * 100).toFixed(1)}%`;
     const done = s.runs.filter((r) => r.status === "done").length;
     $("#progressLabel").textContent = `${done} of ${s.runs.length} simulations finished`;
+    setSimStatus("busy", `running ${done}/${s.runs.length}`);
     const eta = frac > 0.04 ? s.elapsed * (1 - frac) / frac : null;
     $("#progressEta").textContent = eta == null ? "" : eta < 1.5 ? "almost done" : `about ${Math.ceil(eta)} s left`;
     // Pulse the preview with real progress
@@ -574,13 +592,13 @@ function renderBars() {
     });
     countUp(row.querySelector(".v"), mean, m.digits);
     row.querySelector(".u").textContent = m.unit;
-    row.querySelector(".b").innerHTML = a === best ? `<span class="best"><i data-lucide="award"></i>Best</span>` : "";
+    row.querySelector(".b").innerHTML = a === best ? `<span class="best">best</span>` : "";
   }
   icons();
 }
 
 function chartTheme() {
-  return { ink: cssVar("--ink"), ink2: cssVar("--ink-2"), ink3: cssVar("--ink-3"), grid: cssVar("--line"), panel: cssVar("--panel"), ref: cssVar("--ref") };
+  return { ink: cssVar("--ink"), ink2: cssVar("--ink-2"), ink3: cssVar("--ink-3"), grid: cssVar("--grid"), panel: cssVar("--card"), raised: cssVar("--raised"), edge: cssVar("--pipe-edge"), ref: cssVar("--ref") };
 }
 
 function baseChartOpts(t) {
@@ -590,8 +608,9 @@ function baseChartOpts(t) {
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: t.ink, titleColor: t.panel, bodyColor: t.panel, padding: 10, cornerRadius: 8,
-        boxPadding: 4, usePointStyle: true, titleFont: { weight: "600" },
+        backgroundColor: t.raised, titleColor: t.ink, bodyColor: t.ink2, borderColor: t.edge, borderWidth: 1,
+        padding: 10, cornerRadius: 4, boxPadding: 4, usePointStyle: true,
+        titleFont: { weight: "500" }, bodyFont: { family: "ui-monospace, SFMono-Regular, Menlo, monospace", size: 12 },
       },
     },
     scales: {
@@ -607,14 +626,15 @@ const meanLabels = {
   afterDatasetsDraw(chart) {
     const { ctx } = chart;
     ctx.save();
-    ctx.font = "600 12px Geist, sans-serif";
+    ctx.font = "500 12px Inter, sans-serif";
     ctx.fillStyle = cssVar("--ink");
     ctx.textBaseline = "middle";
     // Greedy placement: try right, left, above, below; skip spots that collide
     const placed = [];
     const means = chart.data.datasets.map((ds, i) => ({ ds, i, pt: chart.getDatasetMeta(i).data[0] }))
       .filter(({ ds, i, pt }) => ds.isMean && pt && chart.isDatasetVisible(i));
-    const marks = means.map(({ pt }) => ({ x0: pt.x - 10, x1: pt.x + 10, y0: pt.y - 10, y1: pt.y + 10 }));
+    const marks = chart.data.datasets.flatMap((ds, i) => chart.isDatasetVisible(i) ? chart.getDatasetMeta(i).data : [])
+      .map((pt) => ({ x0: pt.x - 8, x1: pt.x + 8, y0: pt.y - 8, y1: pt.y + 8 }));
     const hit = (b) => [...placed, ...marks].some((o) => b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0);
     const area = chart.chartArea;
     for (const { ds, pt } of means) {
@@ -750,7 +770,8 @@ const replay = {
     this.idx = Math.min(this.idx, n - 1);
     const c = app.summary.config;
     $("#replayTitle").textContent = app.summary.name;
-    $("#replaySub").textContent = `Same bottleneck for both: capacity ${c.minRate}–${c.maxRate} Mbps, ${c.queueSize}-packet queue.`;
+    $("#replaySub").textContent = "Both flows cross the same bottleneck and see the same capacity changes.";
+    $("#replayWinTitle").textContent = `seed ${this.seed} · ${c.minRate}–${c.maxRate} Mbps · ${c.queueSize}-packet queue · ${c.bottleneckDelay} ms`;
     this.render(true);
   },
 
@@ -880,7 +901,7 @@ async function renderLibrary() {
   let items;
   try { items = await api("/api/experiments"); } catch (ex) { root.innerHTML = `<div class="empty">${ex.message}</div>`; return; }
   if (!items.length) {
-    root.innerHTML = `<div class="empty"><i data-lucide="library"></i><p>No saved experiments yet. Run one, then press <b>Save experiment</b> on its results.</p><button class="btn primary" id="libRun"><i data-lucide="flask-conical"></i><span>New experiment</span></button></div>`;
+    root.innerHTML = `<div class="empty"><i data-lucide="library"></i><p class="prose">No saved experiments yet. Run one, then press Save experiment on its results.</p><button class="btn primary" id="libRun"><i data-lucide="flask-conical"></i><span>New experiment</span></button></div>`;
     $("#libRun").onclick = () => showView("run");
     icons();
     return;
@@ -946,38 +967,18 @@ async function renderLibrary() {
 }
 
 /* ================================================================
-   Theme
-   ================================================================ */
-function applyTheme(t) {
-  if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
-  try { t ? localStorage.setItem("theme", t) : localStorage.removeItem("theme"); } catch {}
-  for (const l of Lane.all) l.refreshColors();
-  if (app.summary) {
-    renderScatter();
-    if (replay.data) { replay.buildCharts(); replay.render(true); }
-  }
-}
-$("#themeToggle").addEventListener("click", () => {
-  const dark = document.documentElement.dataset.theme
-    ? document.documentElement.dataset.theme === "dark"
-    : matchMedia("(prefers-color-scheme: dark)").matches;
-  applyTheme(dark ? "light" : "dark");
-});
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => applyTheme(document.documentElement.dataset.theme));
-
-/* ================================================================
    Boot
    ================================================================ */
-for (const b of $$(".rail-items .rail-btn")) b.addEventListener("click", () => !b.disabled && showView(b.dataset.view));
+for (const b of $$(".nav .nav-btn")) b.addEventListener("click", () => !b.disabled && showView(b.dataset.view));
 
 (async function boot() {
-  try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
-  Chart.defaults.font.family = "Geist, ui-sans-serif, system-ui, sans-serif";
+  Chart.defaults.font.family = "Inter, ui-sans-serif, system-ui, sans-serif";
   Chart.defaults.font.size = 12;
   icons();
   try {
     app.defaults = await api("/api/defaults");
   } catch (ex) {
+    setSimStatus("", "server offline");
     $("#formError").textContent = "Can't reach the dashboard server. Start it with dashboard/run_dashboard.sh.";
     $("#formError").hidden = false;
     return;
@@ -986,6 +987,7 @@ for (const b of $$(".rail-items .rail-btn")) b.addEventListener("click", () => !
   showView("run");
   previewWander();
   requestAnimationFrame(frame);
+  setSimStatus(app.defaults.simReady ? "ready" : "", app.defaults.simReady ? "ns-3 ready" : "ns-3 not built");
   if (!app.defaults.simReady) {
     $("#formError").textContent = "The ns-3 simulator isn't built yet. Run dashboard/build_sim.sh, then reload.";
     $("#formError").hidden = false;
